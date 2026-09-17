@@ -1,1 +1,5 @@
-print("Hello world, from server!")
+--!strict
+
+local OxygenService = require(script:WaitForChild("OxygenService"))
+
+OxygenService.Start()

@@ -15,3 +15,33 @@ rojo serve
 ```
 
 For more help, check out [the Rojo documentation](https://rojo.space/docs).
+
+## Oxygen test in the existing Studio scene
+
+Run `rojo serve` and connect the Studio Rojo plugin to this project to sync the
+files into the place containing the hand-built submarine and loot. A fresh Rojo
+build does not contain that scene. No game logic should be pasted into Studio.
+
+On Play, `ServerScriptService.Server` starts its `OxygenService` child module.
+`StarterPlayerScripts.Client` creates the oxygen HUD. The Rojo-defined RemoteEvent
+is `ReplicatedStorage.Shared.Remotes.OxygenUpdated`.
+
+Open Output and filter for `[Oxygen]`:
+
+1. Expect `SafeZone found`, `Service started`, and player oxygen `100/100`.
+   The default spawn is outside the sub, so oxygen begins draining immediately.
+2. Stay outside: oxygen drops by 5 per second, with a server log every 5 seconds
+   (about 75 after 5 seconds, 50 after 10 seconds). The HUD bar shrinks.
+3. Walk onto the submarine platform and into the green SafeZone. Expect
+   `entered sub`; oxygen refills by 20 per second, capped at 100. From 50 it
+   takes about 2.5 seconds to refill. Walk out and expect `outside sub` and drain.
+4. Stay outside for about 20 seconds from full oxygen. Expect `DOWNED at 0/100`
+   and `Round ended`. The server sets Humanoid health to zero. The HUD stays at
+   zero after respawn; press Stop then Play to start a fresh oxygen round.
+5. To test missing scene handling, Stop, temporarily rename SafeZone, and Play.
+   Expect a loud `MISSING` warning, a `SafeZone missing` HUD, and no oxygen drain.
+   Restore the name and expect `SafeZone found` and oxygen updates to resume.
+
+Rates and update/log intervals live in `src/shared/Config.luau`. This implements
+only oxygen: the full Lobby/Dive/Return/Payout state machine is still pending.
+OxygenService exposes a server-only `Depleted` signal for that future integration.
