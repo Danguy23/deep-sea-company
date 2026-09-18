@@ -9,6 +9,7 @@ export type Snapshot = {
 	downed: boolean,
 	roundEnded: boolean,
 	available: boolean,
+	safeZonePosition: Vector3?,
 }
 
 return {}

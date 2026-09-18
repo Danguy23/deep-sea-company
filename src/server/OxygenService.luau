@@ -45,7 +45,7 @@ local function findSafeZone(): BasePart?
 	return safeZone
 end
 
-local function sendSnapshot(player: Player, state: PlayerState, available: boolean)
+local function sendSnapshot(player: Player, state: PlayerState, zone: BasePart?)
 	local snapshot: OxygenTypes.Snapshot = {
 		oxygen = state.oxygen,
 		maximum = Config.OxygenMax,
@@ -54,7 +54,8 @@ local function sendSnapshot(player: Player, state: PlayerState, available: boole
 		inSub = state.inSub == true,
 		downed = state.downed,
 		roundEnded = not active,
-		available = available,
+		available = zone ~= nil,
+		safeZonePosition = if zone then zone.Position else nil,
 	}
 	oxygenUpdated:FireClient(player, snapshot)
 end
@@ -133,7 +134,7 @@ local function updatePlayer(player: Player, state: PlayerState, zone: BasePart?,
 		end
 	end
 	-- Repeated snapshots let a late-loading HUD recover without client requests.
-	sendSnapshot(player, state, zone ~= nil)
+	sendSnapshot(player, state, zone)
 end
 
 function OxygenService.SetActive(value: boolean)
@@ -153,7 +154,7 @@ function OxygenService.Reset()
 		state.suffocating = false
 		state.inSub = nil
 		state.logElapsed = 0
-		sendSnapshot(player, state, SafeZoneService.Find() ~= nil)
+		sendSnapshot(player, state, SafeZoneService.Find())
 	end
 end
 

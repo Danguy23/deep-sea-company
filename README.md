@@ -16,6 +16,103 @@ rojo serve
 
 For more help, check out [the Rojo documentation](https://rojo.space/docs).
 
+## Milestone 2 underwater look test
+
+Run `rojo serve`, connect Studio's Rojo plugin to the existing salvage place,
+stop any old Play session, sync, and Play with Output open. The look is applied
+on Play, rather than baked into the edit-time scene. `ServerScriptService.Server`
+starts its `AtmosphereService` and `LightService` children, then starts the unchanged
+`RunService`. AtmosphereService owns global visuals and runs only once. LightService
+owns the optional directional flashlight. No movement or creature is added.
+
+1. Filter Output for `[Atmosphere]`. Expect exactly one
+   `Underwater look applied | fog 4-60 studs; clock 0; brightness 0` per Play.
+   If the authored Lighting has an Atmosphere object, a warning explains its
+   removal during Play: Roblox Atmosphere overrides linear fog. Stop restores
+   the authored object. No persistent scene edits or MCP script writes are needed.
+2. Leave the flashlight off and look around at ground level, toward distant
+   geometry, and up. Floor and crates within a few studs should be readable, with
+   a dim blue-green cast; geometry fades into dark teal from 4 to 60 studs.
+   Distant walls and the baseplate
+   edge should disappear into murk. There should be no sun, moon, or stars.
+   Outside your immediate surroundings it should remain dark with the flashlight
+   off. Existing scene lights remain intact. Check low and high graphics quality.
+3. In Play's server Explorer, select Lighting. Expect FogStart=4, FogEnd=60,
+   FogColor RGB(6,20,24), Ambient and OutdoorAmbient RGB(38,56,62), ClockTime=0,
+   Brightness=0, and both EnvironmentDiffuseScale and EnvironmentSpecularScale=0.
+   There should be no Atmosphere child; the Sky has CelestialBodiesShown=false
+   and StarCount=0. Inspect the client Lighting too to confirm the applied look.
+4. Walk outside SafeZone for five seconds during Dive: oxygen should fall from
+   100 to about 75, with HP still 100. Return to refill at 20/sec. Approach a
+   crate within 10 studs and press E; carry speed remains 12.8 for default Weight
+   4. Press G in SafeZone; the same Value banks and hands clear. Complete a
+   200-value quota and expect Return -> Payout -> Dive with the next quota 250.
+   The fog stays unchanged across run transitions and respawns. The full
+   Milestone 1 success and failure checks below still apply.
+5. Stop Play, adjust `Config.Underwater`, sync, and Play again. `FogStart` and
+   `ViewDistance` control the fog fade range/density: a shorter range gives
+   denser water. `ViewDistance` is visual occlusion, not a rendering or streaming
+   optimization. `TintColor` controls the murk; `AmbientColor` controls nearby
+   readability. The remaining lighting and sky tunables live alongside them.
+
+### Flashlight test
+
+1. Filter Output for `[Light]`. On spawn expect
+   `<player>: flashlight ready OFF | range 50 studs; angle 55; brightness 5`.
+   Press F to toggle: expect ON/OFF in server Output and a visible beam when on.
+   There is no flashlight button or status row in the HUD. Typing F in chat
+   must not toggle the light; E and G still pick up and drop/deposit loot.
+2. With the flashlight on, aim at a crate or wall roughly 20-40 studs away.
+   It should be much easier to identify inside the cool-colored cone; objects to
+   the side should stay dark. Turn the camera left/right and look up/down: the
+   cone follows where you look, including in first person. Test with carried loot
+   as well. Fog still obscures everything at 60 studs; the light improves effective
+   visibility within the fog rather than changing the global fog cutoff.
+3. In Play's server Explorer, inspect the character's Head:
+   `FlashlightAttachment.Flashlight` is a SpotLight with Range=50, Angle=55,
+   Brightness=5, Shadows=true, and Enabled matching the server toggle log. There is exactly one
+   attachment/light per living character. Shadow appearance depends on Studio's
+   lighting settings and graphics quality. No physical flashlight Tool is needed.
+4. Reset Character with the flashlight on. The old light disappears and the new
+   character receives one flashlight, switched off. Toggle it again. Completing
+   a quota with a living character keeps the light's chosen state; death/respawn
+   resets it. The Milestone 1 oxygen, quota, loot, and movement values are unchanged.
+
+All flashlight tunables live in `Config.Flashlight`. LightService is a distinct
+system because player light ownership and spawn/death cleanup do not belong in
+the global atmosphere or oxygen/loot services. The existing client handles the
+F key and samples camera direction as input intent at most every 0.1 seconds
+while on. The server validates and rate-limits requests, owns Enabled and beam
+settings, and anchors the light to the player's Head; the client never supplies
+a light position. The light is limited by cone and range, with no battery system
+or threat added. Its server-owned Enabled state is available for a future threat.
+
+Local verification: Rojo build includes LightService and both flashlight
+RemoteEvents. Visual tuning and the interaction checks above require Studio Play.
+
+### SafeZone marker test
+
+`StarterPlayerScripts.Client` displays a small teal home icon outside the sub
+during Dive. The existing OxygenUpdated snapshot supplies the SafeZone position
+and in-sub status from the server; no duplicate zone lookup or new service is
+needed. Marker size, colors, and screen padding live in `Config.SafeZoneMarker`.
+
+1. Sync and Play. Expect the original four-row HUD, with no flashlight UI. F
+   still toggles the light and `[Light]` still logs ON/OFF.
+2. During Dive, leave SafeZone and face the sub. The home icon floats over its
+   SafeZone even through dark fog. Turn away: it stays within the screen margins
+   with a small arrow pointing toward the sub. Check left/right, up/down, and
+   directly behind you. Follow the marker back; it disappears when the server
+   reports `entered sub` and the HUD shows `In sub`.
+3. Resize the Studio viewport. The marker should remain within the margins and
+   above the bottom HUD. It hides during Lobby/Return/Payout, death, or a missing
+   SafeZone, then returns outside the sub on the next Dive. Reset Character to
+   check that only one marker persists.
+4. Temporarily rename SafeZone before Play: expect the existing `[Oxygen] MISSING`
+   warning and no marker. Restore the name to recover. Navigation is display
+   only: walking speed, oxygen drain/refill, pickup, deposits, and quota behavior
+   remain unchanged.
+
 ## Milestone 1 full-loop test
 
 Run `rojo serve` and connect the Studio Rojo plugin to the existing place containing
