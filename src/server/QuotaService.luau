@@ -32,9 +32,22 @@ function QuotaService.AddValue(player: Player, value: number, itemName: string)
 	print(string.format("[Quota] %s deposited %s: Value=%g. Banked: %g / %g", player.Name, itemName, value, bankedValue, quota))
 	quotaUpdated:FireAllClients(snapshot())
 	if newlyMet then
-		print(string.format("[Quota] QUOTA MET! Banked: %g / %g. Awaiting run state machine.", bankedValue, quota))
+		print(string.format("[Quota] QUOTA MET! Banked: %g / %g.", bankedValue, quota))
 		quotaMet:Fire(bankedValue, quota)
 	end
+end
+
+function QuotaService.GetSnapshot(): QuotaTypes.Snapshot
+	return snapshot()
+end
+
+function QuotaService.Reset(nextQuota: number)
+	assert(nextQuota > 0 and nextQuota < math.huge, "Quota must be finite and positive")
+	quota = nextQuota
+	bankedValue = 0
+	met = false
+	quotaUpdated:FireAllClients(snapshot())
+	print(string.format("[Quota] Reset. Banked: %g / %g", bankedValue, quota))
 end
 
 function QuotaService.Start()

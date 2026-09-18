@@ -16,119 +16,89 @@ rojo serve
 
 For more help, check out [the Rojo documentation](https://rojo.space/docs).
 
-## Oxygen test in the existing Studio scene
+## Milestone 1 full-loop test
 
-Run `rojo serve` and connect the Studio Rojo plugin to this project to sync the
-files into the place containing the hand-built submarine and loot. A fresh Rojo
-build does not contain that scene. No game logic should be pasted into Studio.
+Run `rojo serve` and connect the Studio Rojo plugin to the existing place containing
+`Workspace.Submarine.SafeZone` and Parts tagged `Loot` with numeric `Value`
+attributes. A fresh Rojo build does not include this hand-built scene. Stop the
+old Play session, sync the source files, then Play with Output open.
 
-On Play, `ServerScriptService.Server` starts its `OxygenService` child module.
-`StarterPlayerScripts.Client` creates the oxygen HUD. The Rojo-defined RemoteEvent
-is `ReplicatedStorage.Shared.Remotes.OxygenUpdated`.
+`ServerScriptService.Server` starts its `RunService` child, which starts the existing
+quota, loot, and oxygen services. `StarterPlayerScripts.Client` displays their
+server snapshots. All game logic lives under `src/`; no Studio code paste is needed.
 
-Open Output and filter for `[Oxygen]`:
+### Startup and oxygen
 
-1. Expect `SafeZone found`, `Service started`, and player oxygen `100/100`.
-   The default spawn is outside the sub, so oxygen begins draining immediately.
-2. Stay outside: oxygen drops by 5 per second, with a server log every 5 seconds
-   (about 75 after 5 seconds, 50 after 10 seconds). The HUD bar shrinks.
-3. Walk onto the submarine platform and into the green SafeZone. Expect
-   `entered sub`; oxygen refills by 20 per second, capped at 100. From 50 it
-   takes about 2.5 seconds to refill. Walk out and expect `outside sub` and drain.
-4. Stay outside for about 20 seconds from full oxygen. Expect `DOWNED at 0/100`
-   and `Round ended`. The server sets Humanoid health to zero. The HUD stays at
-   zero after respawn; press Stop then Play to start a fresh oxygen round.
-5. To test missing scene handling, Stop, temporarily rename SafeZone, and Play.
-   Expect a loud `MISSING` warning, a `SafeZone missing` HUD, and no oxygen drain.
-   Restore the name and expect `SafeZone found` and oxygen updates to resume.
+1. Filter Output for `[Run]`. Expect `Lobby | waiting for a living player`, followed
+   by `Lobby -> Dive | dive 1; banked 0 / 200; oxygen 100` after 3 seconds with a
+   living character present. Oxygen and pickup are paused before Dive.
+2. Expect `[Loot] Fresh dive: respawned 5 scene loot Parts` for the original test
+   scene (otherwise the number of tagged scene Parts). HUD shows empty hands,
+   `Banked: 0 / 200`, and full oxygen at the start of Dive.
+3. Outside SafeZone, oxygen drains at 5/sec: about 75 after 5 seconds and 50 after
+   10 seconds. Inside SafeZone it refills at 20/sec up to 100. Filter `[Oxygen]`
+   for `outside`, `entered sub`, and periodic values. Refill between loot trips.
 
-Rates and update/log intervals live in `src/shared/Config.luau`. The full
-Lobby/Dive/Return/Payout state machine is still pending.
-OxygenService exposes a server-only `Depleted` signal for that future integration.
+### Successful payout and next Dive
 
-## Loot grab-and-haul test
+1. Approach loot within 10 studs and press E. The carried Part follows you; default
+   Weight 4 changes WalkSpeed from 16 to 12.8. HUD shows its Value.
+2. Press G outside SafeZone: it drops, speed returns to 16, and bank stays unchanged.
+   Pick it up again, enter SafeZone, and press G: the Part disappears, hands empty,
+   speed returns to 16, and `[Quota]` logs the deposit. Repeated G adds no credit.
+3. In the original scene, deposit Loot5 (100), Loot4 (75), and Loot2 (25), refilling
+   between trips. Totals should be 100/200, 175/200, then 200/200. If your scene has
+   different Values, deposit any combination reaching at least 200.
+4. Expect exactly one `QUOTA MET` and these `[Run]` transitions:
+   `Dive -> Return | quota met`, then after 1 second
+   `Return -> Payout | banked 200 / 200; SUCCESS`, then after 2 seconds
+   `Payout -> Dive | dive 2; banked 0 / 250; oxygen 100`.
+   An overshoot is also success; its actual banked value appears in Payout.
+5. During Return/Payout, oxygen pauses and pickups/deposits are disabled. In the
+   next Dive, HUD shows 0/250, full oxygen, and empty hands. All original tagged
+   Parts reappear at their original positions with their original attributes;
+   dropped/moved leftovers disappear. No extra Parts or pickup prompts accumulate.
+6. For a second success, the original scene's Loot2 + Loot3 + Loot4 + Loot5 total
+   250. The next quota is 300. The original five Parts total only 260, so reaching
+   300 requires more/higher-value scene loot; the fixed scene is intentionally
+   respawned, not procedurally expanded.
 
-Sync with `rojo serve` into the existing Studio scene, then press Play. The server
-entry `ServerScriptService.Server` starts its `LootService` child. The existing
-client script displays carried Value and sends only a drop request when G is
-pressed. Output logs beginning `[Loot]` come from the server.
+### Failure, unbanked loot loss, and automatic reset
 
-1. On Play, expect five `Registered LootN` logs for the test scene, followed by
-   `Service started`. Registration reports each item's Value and effective Weight.
-   With no Weight attribute, Weight is 4. HUD reads `Carried Value: 0 | Empty hands`.
-2. Approach Loot1 within 10 studs and press E once. Expect
-   `picked up Loot1: Value=10 Weight=4 WalkSpeed=12.80` for the normal base speed
-   of 16. The item follows in front of you, movement slows,
-   and the HUD reads `Carried Value: 10 | Loot1 | G: drop/deposit`.
-3. While carrying, approach another loot object and press E. Expect
-   `Pickup rejected ... already carrying one item`. The original item and HUD
-   remain unchanged; the second item stays on the ground.
-4. Outside SafeZone, press G with game input focused (outside chat/text boxes). Expect
-   `dropped Loot1 (G requested); WalkSpeed=16.00`. The item is released five studs
-   ahead and falls onto the floor. It becomes pickable again, movement returns to normal,
-   and the HUD reads `Carried Value: 0 | Empty hands`. Pick it up again to confirm
-   it remains usable. Inside SafeZone, G now deposits and removes the item instead
-   of dropping it. To test pickup inside the sub, move an uncarried loot Part
-   there using Studio's Server view, then press E. SafeZone is excluded from the
-   server visibility check; physical walls still block pickup.
-   Pressing G empty-handed does nothing.
-5. Stop. In Studio Properties, add a numeric Weight attribute of 1 to Loot1 and
-   10 to Loot2. Play again. Pick up and drop each separately outside SafeZone: Output should show
-   Weight=1 / WalkSpeed=15.20 and Weight=10 / WalkSpeed=8.00. Weight=0 gives 16.00;
-   Weight=20 reaches the maximum penalty and gives 4.80. These expectations assume
-   a base speed of 16. The saved speed from before pickup is restored on drop.
-6. While carrying, allow oxygen to hit zero outside the sub. Expect a drop log
-   with `death` or `round ended`, plus `[Loot] Round ended; pickups disabled`.
-   HUD returns to empty hands. After respawn, pickups stay disabled until Stop/Play.
-7. Optional runtime scene checks, using Studio's **Server** view: duplicate a
-   tagged loot Part with a numeric Value and expect a new registration and prompt.
-   Remove its Loot tag while carrying it: expect `item removed`, no carry weld,
-   normal speed, empty HUD, and removal of the service's prompt. Delete a carried
-   item or reset your character to verify the same carry cleanup.
+1. During any Dive, pick up a Part and stay outside until oxygen reaches zero
+   (about 20 seconds from full). Do not bank enough to meet quota.
+2. Expect `[Oxygen] ... DOWNED at 0/100`, followed by
+   `[Run] Dive -> Return | all players downed/out of air`,
+   `Return -> Payout | banked <actual> / <quota>; FAILED`, and
+   `Payout -> GameOver | quota missed; resetting run`.
+   The character dies. Carried loot earns no credit; hands clear and carry speed
+   is restored. Run-end carry cleanup logs lost unbanked loot; if death cleanup
+   already dropped it, it remains disabled and is cleared before the next Dive.
+3. After 2 seconds of GameOver, expect `[Quota] Reset. Banked: 0 / 200` and
+   `[Run] GameOver -> Lobby | run reset; waiting for crew`.
+   After the character respawns and the 3-second lobby delay, expect
+   `Lobby -> Dive | dive 1; banked 0 / 200; oxygen 100`.
+   No Stop/Play is needed. Fresh loot is restored, oxygen drains again outside,
+   and pickup/deposit works again.
+4. Repeat failure after a successful Dive to verify the raised quota also resets
+   to 200. Reset Character during Dive to verify a dead single-player crew ends
+   the Dive as well. Each Dive ends once, even if end signals overlap.
 
-Use the submarine SafeZone to refill oxygen between pickups. Oxygen still drains
-at 5/sec outside, so return before it runs out. Weight penalties are proportional
-to Weight with a 70% cap; missing or invalid Weight uses 4. A missing/invalid Value
-warns and disables the pickup prompt. Deposits bank loot; round progression and
-payout transitions remain pending.
+### Scene warnings and configuration
 
-Loot prompts use Custom style to hide the floating name/value/button popup.
-Press E near loot to pick it up; the carried item's name and Value appear in the
-player HUD. Output still logs pickups and drops.
+Stop, temporarily rename SafeZone, and Play: expect a loud `[Oxygen] MISSING`
+warning, a `SafeZone missing` HUD during Dive, and paused oxygen. Restore the name
+and updates resume. Invalid/missing loot Values warn and disable pickup. No tagged
+loot or non-Archivable loot warns because there is no valid respawn template.
 
-## Quota and deposit test
+LootService captures the original tagged scene Parts once when it starts, before
+adding runtime prompts. Stop/Play after editing the scene to capture a new layout.
+Runtime-added loot is cleared on the next Dive and is not added to the original set.
+All tunables live in `src/shared/Config.luau`: LobbyDelay=3, ReturnDelay=1,
+PayoutDelay=2, GameOverDelay=2, StartingQuota=200, and QuotaIncrease=50.
 
-Run `rojo serve`, connect Rojo to the existing Studio scene, and Play. The server
-entry `ServerScriptService.Server` starts `QuotaService` before `LootService`.
-Open Output and filter for `[Quota]` (use `[Loot]` to check normal drops/speed).
-
-1. Startup: expect `[Quota] Service started. Banked: 0 / 200` and a HUD line
-   `Banked: 0 / 200`. `Config.StartingQuota` defaults to 200.
-2. Pick up Loot2 (Value 25) with E while outside the sub, then press G outside.
-   Expect the normal `[Loot] ... dropped ... (G requested)` log. The Part remains
-   in the world and banked value stays 0. Pick it up again.
-3. Walk well inside the green SafeZone, then press G. Expect
-   `[Quota] <player> deposited Loot2: Value=25. Banked: 25 / 200` and
-   `[Loot] ... released Loot2 for deposit; WalkSpeed=16.00` (default base speed).
-   Loot2 disappears from Workspace; HUD shows empty hands and `Banked: 25 / 200`.
-   Movement returns to its pre-pickup speed.
-4. Press G several more times while empty-handed: no extra deposit logs or
-   credits. Deposit Loot4 (Value 75) next: total becomes `Banked: 100 / 200`.
-   No quota-met message should appear yet. Refill oxygen in the sub between trips.
-5. Test threshold: Stop, temporarily set `Config.StartingQuota = 100` in the
-   source file, sync, and Play. Bank resets to 0. Deposit Loot2 then Loot4 to
-   reach exactly 100. Expect `[Quota] QUOTA MET! Banked: 100 / 100` once and HUD
-   `Banked: 100 / 100 | Quota met`. Deposit Loot1 afterward: total becomes 110,
-   target stays 100, and no second quota-met message appears. Pickups and gameplay
-   continue; this service does not advance or end the round.
-6. To test exceeding the threshold in one deposit, Stop/Play with the temporary
-   quota of 100 and deposit Loot4 (75) then Loot3 (50). Expect the quota-met log
-   at `Banked: 125 / 100`. Restore `Config.StartingQuota = 200` when finished.
-7. Stop/Play resets banked value and the met latch. Death/respawn alone does not
-   reset the bank. Missing SafeZone warns loudly and G drops normally with no credit.
-
-The original five test Parts total 260, enough for the default quota of 200. Use 100
-for threshold testing. No loot is spawned by the game logic. All authoritative
-values stay on the server; `QuotaUpdated` only sends HUD snapshots. The server-only
-`QuotaService.QuotaMet` signal supplies `(bankedValue, quota)` once when the target
-is first reached. A future RunService will handle the next run and quota changes.
+Local verification: Rojo build succeeds; server sources parse in Studio; a
+throwaway RunService harness passes lobby timing, success/quota increase, duplicate
+end signals, all-downed failure, GameOver reset, respawn wait, automatic restart,
+and empty-crew handling. Full scene interaction requires syncing these files and
+running the steps above.

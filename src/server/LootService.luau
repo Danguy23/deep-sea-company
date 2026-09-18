@@ -30,7 +30,8 @@ local registered: {[BasePart]: Registration} = {}
 local carried: {[Player]: Carry} = {}
 local owners: {[BasePart]: Player} = {}
 local started = false
-local roundEnded = false
+local roundEnded = true
+local templates: {{part: BasePart, parent: Instance}} = {}
 
 local function numericAttribute(part: BasePart, name: string): number?
 	local value = part:GetAttribute(name)
@@ -195,6 +196,7 @@ local function dropOrDeposit(player: Player)
 end
 
 local function register(instance: Instance)
+	if not instance:IsDescendantOf(workspace) then return end
 	if not instance:IsA("BasePart") then
 		warn("[Loot] Loot tag requires a Part: " .. instance:GetFullName())
 		return
@@ -238,14 +240,57 @@ end
 
 function LootService.EndRound()
 	roundEnded = true
-	for player in carried do drop(player, "round ended") end
+	for player in carried do
+		local carry = releaseCarry(player)
+		if carry then
+			unregister(carry.part)
+			carry.part:Destroy()
+			print(string.format("[Loot] %s lost unbanked carried loot at run end; WalkSpeed=%.2f", player.Name, carry.baseSpeed))
+			sendSnapshot(player)
+		end
+	end
 	for _, entry in registered do entry.prompt.Enabled = false end
-	print("[Loot] Round ended; pickups disabled until Stop/Play.")
+	print("[Loot] Round ended; pickups disabled.")
+end
+
+function LootService.BeginRound()
+	LootService.EndRound()
+	for _, item in CollectionService:GetTagged("Loot") do
+		if item:IsA("BasePart") and item:IsDescendantOf(workspace) then
+			unregister(item)
+			item:Destroy()
+		end
+	end
+	roundEnded = false
+	for _, template in templates do
+		local part = template.part:Clone()
+		local parent = template.parent
+		if parent ~= workspace and not parent:IsDescendantOf(workspace) then
+			warn("[Loot] Original loot parent missing; respawning in Workspace.")
+			parent = workspace
+		end
+		part.Parent = parent
+		CollectionService:AddTag(part, "Loot")
+		register(part)
+	end
+	print(string.format("[Loot] Fresh dive: respawned %d scene loot Parts.", #templates))
 end
 
 function LootService.Start()
 	if started then return end
 	started = true
+	-- Capture the hand-built scene before registration adds runtime prompts.
+	for _, item in CollectionService:GetTagged("Loot") do
+		if item:IsA("BasePart") and item:IsDescendantOf(workspace) then
+			local copy = item:Clone()
+			if copy then
+				table.insert(templates, {part = copy, parent = item.Parent :: Instance})
+			else
+				warn("[Loot] Cannot capture non-Archivable loot: " .. item:GetFullName())
+			end
+		end
+	end
+	if #templates == 0 then warn("[Loot] No scene loot templates captured; new dives will have no loot.") end
 	CollectionService:GetInstanceAddedSignal("Loot"):Connect(register)
 	CollectionService:GetInstanceRemovedSignal("Loot"):Connect(function(instance: Instance)
 		if instance:IsA("BasePart") then unregister(instance) end

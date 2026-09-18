@@ -1,12 +1,5 @@
 --!strict
 
-local OxygenService = require(script:WaitForChild("OxygenService"))
-local LootService = require(script:WaitForChild("LootService"))
-local QuotaService = require(script:WaitForChild("QuotaService"))
+local RunService = require(script:WaitForChild("RunService"))
 
-QuotaService.Start()
-LootService.Start()
-OxygenService.Depleted:Connect(function()
-	LootService.EndRound()
-end)
-OxygenService.Start()
+RunService.Start()

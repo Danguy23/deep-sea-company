@@ -17,5 +17,10 @@ return table.freeze({
 	LootUpdateInterval = 0.25,
 	LootDropKey = Enum.KeyCode.G,
 	StartingQuota = 200,
+	QuotaIncrease = 50,
+	LobbyDelay = 3,
+	ReturnDelay = 1,
+	PayoutDelay = 2,
+	GameOverDelay = 2,
 	QuotaUpdateInterval = 0.5,
 })

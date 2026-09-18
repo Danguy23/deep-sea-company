@@ -22,10 +22,10 @@ type PlayerState = {
 local OxygenService = {}
 local states: {[Player]: PlayerState} = {}
 local started = false
-local roundEnded = false
+local active = false
 local zoneWasAvailable: boolean? = nil
 
--- Future run logic can subscribe to this server-only signal.
+-- Reports depletion; RunService decides whether the dive ends.
 local depleted = Instance.new("BindableEvent")
 OxygenService.Depleted = depleted.Event
 
@@ -49,7 +49,7 @@ local function sendSnapshot(player: Player, state: PlayerState, available: boole
 		maximum = Config.OxygenMax,
 		inSub = state.inSub == true,
 		downed = state.downed,
-		roundEnded = roundEnded,
+		roundEnded = not active,
 		available = available,
 	}
 	oxygenUpdated:FireClient(player, snapshot)
@@ -62,17 +62,15 @@ local function addPlayer(player: Player)
 	local state: PlayerState
 	local function onCharacter(character: Model)
 		state.character = character
-		state.oxygen = if roundEnded then 0 else Config.OxygenMax
 		state.inSub = nil
-		state.downed = roundEnded
 		state.logElapsed = 0
-		print(string.format("[Oxygen] %s: oxygen %.1f/%d; roundEnded=%s", player.Name, state.oxygen, Config.OxygenMax, tostring(roundEnded)))
+		print(string.format("[Oxygen] %s: oxygen %.1f/%d; active=%s", player.Name, state.oxygen, Config.OxygenMax, tostring(active)))
 	end
 	state = {
 		oxygen = Config.OxygenMax,
 		character = nil,
 		inSub = nil,
-		downed = roundEnded,
+		downed = false,
 		logElapsed = 0,
 		characterConnection = player.CharacterAdded:Connect(onCharacter),
 	}
@@ -86,7 +84,7 @@ local function updatePlayer(player: Player, state: PlayerState, zone: BasePart?,
 	local character = state.character
 	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
 	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
-	if not roundEnded and not state.downed and humanoid and humanoid.Health > 0 and root and root:IsA("BasePart") and character and zone then
+	if active and not state.downed and humanoid and humanoid.Health > 0 and root and root:IsA("BasePart") and character and zone then
 		local inSub = SafeZoneService.IsCharacterInside(character, root, zone)
 		if inSub ~= state.inSub then
 			print(string.format("[Oxygen] %s: %s sub at %.1f/%d", player.Name, if inSub then "entered" else "outside", state.oxygen, Config.OxygenMax))
@@ -101,14 +99,33 @@ local function updatePlayer(player: Player, state: PlayerState, zone: BasePart?,
 		end
 		if state.oxygen <= 0 then
 			state.downed = true
-			roundEnded = true
-			humanoid.Health = 0
-			print(string.format("[Oxygen] %s DOWNED at 0/%d. Round ended; press Stop then Play for a new test.", player.Name, Config.OxygenMax))
+			print(string.format("[Oxygen] %s DOWNED at 0/%d.", player.Name, Config.OxygenMax))
 			depleted:Fire(player)
+			humanoid.Health = 0
 		end
 	end
 	-- Repeated snapshots let a late-loading HUD recover without client requests.
 	sendSnapshot(player, state, zone ~= nil)
+end
+
+function OxygenService.SetActive(value: boolean)
+	active = value
+end
+
+function OxygenService.Reset()
+	for player, state in states do
+		state.oxygen = Config.OxygenMax
+		state.downed = false
+		state.inSub = nil
+		state.logElapsed = 0
+		sendSnapshot(player, state, SafeZoneService.Find() ~= nil)
+	end
+end
+
+function OxygenService.IsDowned(player: Player): boolean
+	local state = states[player]
+	local humanoid = if player.Character then player.Character:FindFirstChildOfClass("Humanoid") else nil
+	return (state ~= nil and state.downed) or (humanoid ~= nil and humanoid.Health <= 0)
 end
 
 function OxygenService.Start()
