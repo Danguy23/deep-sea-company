@@ -42,8 +42,8 @@ Open Output and filter for `[Oxygen]`:
    Expect a loud `MISSING` warning, a `SafeZone missing` HUD, and no oxygen drain.
    Restore the name and expect `SafeZone found` and oxygen updates to resume.
 
-Rates and update/log intervals live in `src/shared/Config.luau`. This implements
-only oxygen: the full Lobby/Dive/Return/Payout state machine is still pending.
+Rates and update/log intervals live in `src/shared/Config.luau`. The full
+Lobby/Dive/Return/Payout state machine is still pending.
 OxygenService exposes a server-only `Depleted` signal for that future integration.
 
 ## Loot grab-and-haul test
@@ -59,20 +59,21 @@ pressed. Output logs beginning `[Loot]` come from the server.
 2. Approach Loot1 within 10 studs and press E once. Expect
    `picked up Loot1: Value=10 Weight=4 WalkSpeed=12.80` for the normal base speed
    of 16. The item follows in front of you, movement slows,
-   and the HUD reads `Carried Value: 10 | Loot1 | G: drop`.
+   and the HUD reads `Carried Value: 10 | Loot1 | G: drop/deposit`.
 3. While carrying, approach another loot object and press E. Expect
    `Pickup rejected ... already carrying one item`. The original item and HUD
    remain unchanged; the second item stays on the ground.
-4. Press G with game input focused (outside chat/text boxes). Expect
+4. Outside SafeZone, press G with game input focused (outside chat/text boxes). Expect
    `dropped Loot1 (G requested); WalkSpeed=16.00`. The item is released five studs
    ahead and falls onto the floor. It becomes pickable again, movement returns to normal,
    and the HUD reads `Carried Value: 0 | Empty hands`. Pick it up again to confirm
-   it remains usable. Repeat inside SafeZone: drop with G and press E once to
-   pick it up again; expect the same pickup log and carried Value. SafeZone is
-   excluded from the server visibility check; physical walls still block pickup.
+   it remains usable. Inside SafeZone, G now deposits and removes the item instead
+   of dropping it. To test pickup inside the sub, move an uncarried loot Part
+   there using Studio's Server view, then press E. SafeZone is excluded from the
+   server visibility check; physical walls still block pickup.
    Pressing G empty-handed does nothing.
 5. Stop. In Studio Properties, add a numeric Weight attribute of 1 to Loot1 and
-   10 to Loot2. Play again. Pick up and drop each separately: Output should show
+   10 to Loot2. Play again. Pick up and drop each separately outside SafeZone: Output should show
    Weight=1 / WalkSpeed=15.20 and Weight=10 / WalkSpeed=8.00. Weight=0 gives 16.00;
    Weight=20 reaches the maximum penalty and gives 4.80. These expectations assume
    a base speed of 16. The saved speed from before pickup is restored on drop.
@@ -88,8 +89,46 @@ pressed. Output logs beginning `[Loot]` come from the server.
 Use the submarine SafeZone to refill oxygen between pickups. Oxygen still drains
 at 5/sec outside, so return before it runs out. Weight penalties are proportional
 to Weight with a 70% cap; missing or invalid Weight uses 4. A missing/invalid Value
-warns and disables the pickup prompt. This slice does not bank loot or pay quota.
+warns and disables the pickup prompt. Deposits bank loot; round progression and
+payout transitions remain pending.
 
 Loot prompts use Custom style to hide the floating name/value/button popup.
 Press E near loot to pick it up; the carried item's name and Value appear in the
 player HUD. Output still logs pickups and drops.
+
+## Quota and deposit test
+
+Run `rojo serve`, connect Rojo to the existing Studio scene, and Play. The server
+entry `ServerScriptService.Server` starts `QuotaService` before `LootService`.
+Open Output and filter for `[Quota]` (use `[Loot]` to check normal drops/speed).
+
+1. Startup: expect `[Quota] Service started. Banked: 0 / 200` and a HUD line
+   `Banked: 0 / 200`. `Config.StartingQuota` defaults to 200.
+2. Pick up Loot2 (Value 25) with E while outside the sub, then press G outside.
+   Expect the normal `[Loot] ... dropped ... (G requested)` log. The Part remains
+   in the world and banked value stays 0. Pick it up again.
+3. Walk well inside the green SafeZone, then press G. Expect
+   `[Quota] <player> deposited Loot2: Value=25. Banked: 25 / 200` and
+   `[Loot] ... released Loot2 for deposit; WalkSpeed=16.00` (default base speed).
+   Loot2 disappears from Workspace; HUD shows empty hands and `Banked: 25 / 200`.
+   Movement returns to its pre-pickup speed.
+4. Press G several more times while empty-handed: no extra deposit logs or
+   credits. Deposit Loot4 (Value 75) next: total becomes `Banked: 100 / 200`.
+   No quota-met message should appear yet. Refill oxygen in the sub between trips.
+5. Test threshold: Stop, temporarily set `Config.StartingQuota = 100` in the
+   source file, sync, and Play. Bank resets to 0. Deposit Loot2 then Loot4 to
+   reach exactly 100. Expect `[Quota] QUOTA MET! Banked: 100 / 100` once and HUD
+   `Banked: 100 / 100 | Quota met`. Deposit Loot1 afterward: total becomes 110,
+   target stays 100, and no second quota-met message appears. Pickups and gameplay
+   continue; this service does not advance or end the round.
+6. To test exceeding the threshold in one deposit, Stop/Play with the temporary
+   quota of 100 and deposit Loot4 (75) then Loot3 (50). Expect the quota-met log
+   at `Banked: 125 / 100`. Restore `Config.StartingQuota = 200` when finished.
+7. Stop/Play resets banked value and the met latch. Death/respawn alone does not
+   reset the bank. Missing SafeZone warns loudly and G drops normally with no credit.
+
+The original five test Parts total 260, enough for the default quota of 200. Use 100
+for threshold testing. No loot is spawned by the game logic. All authoritative
+values stay on the server; `QuotaUpdated` only sends HUD snapshots. The server-only
+`QuotaService.QuotaMet` signal supplies `(bankedValue, quota)` once when the target
+is first reached. A future RunService will handle the next run and quota changes.

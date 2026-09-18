@@ -4,6 +4,8 @@ local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local SafeZoneService = require(script.Parent:WaitForChild("SafeZoneService"))
+local QuotaService = require(script.Parent:WaitForChild("QuotaService"))
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = require(Shared:WaitForChild("Config"))
 local LootTypes = require(Shared:WaitForChild("LootTypes"))
@@ -58,10 +60,10 @@ local function sendSnapshot(player: Player)
 	lootUpdated:FireClient(player, snapshot)
 end
 
-local function drop(player: Player, reason: string)
+local function releaseCarry(player: Player): Carry?
 	local carry = carried[player]
 	if not carry then
-		return
+		return nil
 	end
 	-- Clear ownership before changing physics or firing any callbacks.
 	carried[player] = nil
@@ -69,6 +71,14 @@ local function drop(player: Player, reason: string)
 	carry.deathConnection:Disconnect()
 	carry.weld:Destroy()
 	carry.humanoid.WalkSpeed = carry.baseSpeed
+	return carry
+end
+
+local function drop(player: Player, reason: string)
+	local carry = releaseCarry(player)
+	if not carry then
+		return
+	end
 	local part = carry.part
 	part.CanCollide = carry.canCollide
 	part.Massless = carry.massless
@@ -110,9 +120,8 @@ local function pickup(player: Player, part: BasePart)
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 	local excluded: {Instance} = {character :: Model}
-	local submarine = workspace:FindFirstChild("Submarine")
-	local safeZone = if submarine and submarine:IsA("Model") then submarine:FindFirstChild("SafeZone") else nil
-	if safeZone and safeZone:IsA("BasePart") then
+	local safeZone = SafeZoneService.Find()
+	if safeZone then
 		table.insert(excluded, safeZone)
 	end
 	rayParams.FilterDescendantsInstances = excluded
@@ -150,6 +159,39 @@ local function unregister(part: BasePart)
 	local owner = owners[part]
 	if owner then drop(owner, "item removed") end
 	entry.prompt:Destroy()
+end
+
+local function dropOrDeposit(player: Player)
+	local carry = carried[player]
+	if not carry then return end
+	local character = player.Character
+	if roundEnded or not character or carry.root.Parent ~= character or carry.humanoid.Health <= 0 then
+		drop(player, "character unavailable")
+		return
+	end
+	local zone = SafeZoneService.Find()
+	if not zone then
+		warn("[Quota] Missing Workspace.Submarine.SafeZone; cannot deposit. Dropping loot normally.")
+	end
+	if not zone or not SafeZoneService.IsCharacterInside(character, carry.root, zone) then
+		drop(player, "G requested")
+		return
+	end
+	local part = carry.part
+	local value = numericAttribute(part, "Value")
+	if value == nil or not registered[part] or not CollectionService:HasTag(part, "Loot") or not part:IsDescendantOf(workspace) then
+		warn("[Quota] Deposit rejected: carried loot is unavailable or has an invalid Value.")
+		return
+	end
+	local itemName = part.Name
+	-- No yields: remove carry ownership and the item before banking it. Repeated
+	-- G requests then see empty hands, so this Part can only be credited once.
+	releaseCarry(player)
+	unregister(part)
+	part:Destroy()
+	sendSnapshot(player)
+	print(string.format("[Loot] %s released %s for deposit; WalkSpeed=%.2f", player.Name, itemName, carry.baseSpeed))
+	QuotaService.AddValue(player, value, itemName)
 end
 
 local function register(instance: Instance)
@@ -211,7 +253,7 @@ function LootService.Start()
 	local items = CollectionService:GetTagged("Loot")
 	for _, item in items do register(item) end
 	if #items == 0 then warn("[Loot] No Parts tagged Loot found; tag scene Parts and add numeric Value attributes.") end
-	dropRequested.OnServerEvent:Connect(function(player: Player) drop(player, "G requested") end)
+	dropRequested.OnServerEvent:Connect(dropOrDeposit)
 	Players.PlayerRemoving:Connect(function(player: Player) drop(player, "player left") end)
 	local accumulated = 0
 	RunService.Heartbeat:Connect(function(deltaTime: number)
@@ -223,7 +265,7 @@ function LootService.Start()
 		end
 		for _, player in Players:GetPlayers() do sendSnapshot(player) end
 	end)
-	print("[Loot] Service started. Press E to pick up; G to drop. One item per player.")
+	print("[Loot] Service started. Press E to pick up; G to deposit in sub or drop outside. One item per player.")
 end
 
 return LootService

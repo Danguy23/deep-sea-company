@@ -16,4 +16,6 @@ return table.freeze({
 	LootDropOffset = CFrame.new(0, 0, -5),
 	LootUpdateInterval = 0.25,
 	LootDropKey = Enum.KeyCode.G,
+	StartingQuota = 200,
+	QuotaUpdateInterval = 0.5,
 })

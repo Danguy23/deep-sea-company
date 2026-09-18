@@ -3,6 +3,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local SafeZoneService = require(script.Parent:WaitForChild("SafeZoneService"))
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = require(Shared:WaitForChild("Config"))
@@ -29,9 +30,7 @@ local depleted = Instance.new("BindableEvent")
 OxygenService.Depleted = depleted.Event
 
 local function findSafeZone(): BasePart?
-	local submarine = workspace:FindFirstChild("Submarine")
-	local zone = if submarine and submarine:IsA("Model") then submarine:FindFirstChild("SafeZone") else nil
-	local safeZone = if zone and zone:IsA("BasePart") then zone else nil
+	local safeZone = SafeZoneService.Find()
 	local available = safeZone ~= nil
 	if available ~= zoneWasAvailable then
 		zoneWasAvailable = available
@@ -42,22 +41,6 @@ local function findSafeZone(): BasePart?
 		end
 	end
 	return safeZone
-end
-
-local function isInSub(character: Model, root: BasePart, zone: BasePart): boolean
-	-- Point containment also works when the zone is transparent/non-collidable.
-	local point = zone.CFrame:PointToObjectSpace(root.Position)
-	local halfSize = zone.Size / 2
-	if math.abs(point.X) <= halfSize.X and math.abs(point.Y) <= halfSize.Y and math.abs(point.Z) <= halfSize.Z then
-		return true
-	end
-
-	-- Include character limbs touching the boundary; ignore nearby loot and other players.
-	local overlap = OverlapParams.new()
-	overlap.FilterType = Enum.RaycastFilterType.Include
-	overlap.FilterDescendantsInstances = {character}
-	overlap.MaxParts = 1
-	return #workspace:GetPartBoundsInBox(zone.CFrame, zone.Size + Vector3.new(0.1, 0.1, 0.1), overlap) > 0
 end
 
 local function sendSnapshot(player: Player, state: PlayerState, available: boolean)
@@ -104,7 +87,7 @@ local function updatePlayer(player: Player, state: PlayerState, zone: BasePart?,
 	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
 	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
 	if not roundEnded and not state.downed and humanoid and humanoid.Health > 0 and root and root:IsA("BasePart") and character and zone then
-		local inSub = isInSub(character, root, zone)
+		local inSub = SafeZoneService.IsCharacterInside(character, root, zone)
 		if inSub ~= state.inSub then
 			print(string.format("[Oxygen] %s: %s sub at %.1f/%d", player.Name, if inSub then "entered" else "outside", state.oxygen, Config.OxygenMax))
 		end

@@ -7,10 +7,12 @@ local UserInputService = game:GetService("UserInputService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OxygenTypes = require(Shared:WaitForChild("OxygenTypes"))
 local LootTypes = require(Shared:WaitForChild("LootTypes"))
+local QuotaTypes = require(Shared:WaitForChild("QuotaTypes"))
 local Config = require(Shared:WaitForChild("Config"))
 local lootUpdated = Shared:WaitForChild("Remotes"):WaitForChild("LootUpdated") :: RemoteEvent
 local dropRequested = Shared:WaitForChild("Remotes"):WaitForChild("DropLoot") :: RemoteEvent
 local oxygenUpdated = Shared:WaitForChild("Remotes"):WaitForChild("OxygenUpdated") :: RemoteEvent
+local quotaUpdated = Shared:WaitForChild("Remotes"):WaitForChild("QuotaUpdated") :: RemoteEvent
 local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
 
 local hud = Instance.new("ScreenGui")
@@ -21,7 +23,7 @@ hud.Parent = playerGui
 local panel = Instance.new("Frame")
 panel.AnchorPoint = Vector2.new(0.5, 1)
 panel.Position = UDim2.new(0.5, 0, 1, -24)
-panel.Size = UDim2.fromOffset(340, 100)
+panel.Size = UDim2.fromOffset(380, 132)
 panel.BackgroundColor3 = Color3.fromRGB(20, 30, 40)
 panel.BorderSizePixel = 0
 panel.Parent = hud
@@ -60,8 +62,22 @@ lootLabel.Text = "Carried Value: waiting for server..."
 lootLabel.Parent = panel
 
 lootUpdated.OnClientEvent:Connect(function(snapshot: LootTypes.Snapshot)
-	lootLabel.Text = if snapshot.carrying then string.format("Carried Value: %g | %s | G: drop", snapshot.value, snapshot.name)
+	lootLabel.Text = if snapshot.carrying then string.format("Carried Value: %g | %s | G: drop/deposit", snapshot.value, snapshot.name)
 		else "Carried Value: 0 | Empty hands"
+end)
+
+local quotaLabel = Instance.new("TextLabel")
+quotaLabel.Position = UDim2.fromOffset(10, 96)
+quotaLabel.Size = UDim2.new(1, -20, 0, 28)
+quotaLabel.BackgroundTransparency = 1
+quotaLabel.Font = Enum.Font.GothamBold
+quotaLabel.TextSize = 16
+quotaLabel.TextColor3 = Color3.new(1, 1, 1)
+quotaLabel.Text = "Banked: waiting for server..."
+quotaLabel.Parent = panel
+
+quotaUpdated.OnClientEvent:Connect(function(snapshot: QuotaTypes.Snapshot)
+	quotaLabel.Text = string.format("Banked: %g / %g%s", snapshot.bankedValue, snapshot.quota, if snapshot.met then " | Quota met" else "")
 end)
 
 UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
