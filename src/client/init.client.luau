@@ -2,9 +2,14 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OxygenTypes = require(Shared:WaitForChild("OxygenTypes"))
+local LootTypes = require(Shared:WaitForChild("LootTypes"))
+local Config = require(Shared:WaitForChild("Config"))
+local lootUpdated = Shared:WaitForChild("Remotes"):WaitForChild("LootUpdated") :: RemoteEvent
+local dropRequested = Shared:WaitForChild("Remotes"):WaitForChild("DropLoot") :: RemoteEvent
 local oxygenUpdated = Shared:WaitForChild("Remotes"):WaitForChild("OxygenUpdated") :: RemoteEvent
 local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
 
@@ -16,7 +21,7 @@ hud.Parent = playerGui
 local panel = Instance.new("Frame")
 panel.AnchorPoint = Vector2.new(0.5, 1)
 panel.Position = UDim2.new(0.5, 0, 1, -24)
-panel.Size = UDim2.fromOffset(300, 68)
+panel.Size = UDim2.fromOffset(340, 100)
 panel.BackgroundColor3 = Color3.fromRGB(20, 30, 40)
 panel.BorderSizePixel = 0
 panel.Parent = hud
@@ -43,6 +48,27 @@ fill.Size = UDim2.fromScale(0, 1)
 fill.BackgroundColor3 = Color3.fromRGB(65, 210, 160)
 fill.BorderSizePixel = 0
 fill.Parent = track
+
+local lootLabel = Instance.new("TextLabel")
+lootLabel.Position = UDim2.fromOffset(10, 64)
+lootLabel.Size = UDim2.new(1, -20, 0, 28)
+lootLabel.BackgroundTransparency = 1
+lootLabel.Font = Enum.Font.Gotham
+lootLabel.TextSize = 14
+lootLabel.TextColor3 = Color3.new(1, 1, 1)
+lootLabel.Text = "Carried Value: waiting for server..."
+lootLabel.Parent = panel
+
+lootUpdated.OnClientEvent:Connect(function(snapshot: LootTypes.Snapshot)
+	lootLabel.Text = if snapshot.carrying then string.format("Carried Value: %g | %s | G: drop", snapshot.value, snapshot.name)
+		else "Carried Value: 0 | Empty hands"
+end)
+
+UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
+	if not processed and input.KeyCode == Config.LootDropKey and not UserInputService:GetFocusedTextBox() then
+		dropRequested:FireServer()
+	end
+end)
 
 oxygenUpdated.OnClientEvent:Connect(function(snapshot: OxygenTypes.Snapshot)
 	local fraction = math.clamp(snapshot.oxygen / snapshot.maximum, 0, 1)

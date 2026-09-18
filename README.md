@@ -45,3 +45,44 @@ Open Output and filter for `[Oxygen]`:
 Rates and update/log intervals live in `src/shared/Config.luau`. This implements
 only oxygen: the full Lobby/Dive/Return/Payout state machine is still pending.
 OxygenService exposes a server-only `Depleted` signal for that future integration.
+
+## Loot grab-and-haul test
+
+Sync with `rojo serve` into the existing Studio scene, then press Play. The server
+entry `ServerScriptService.Server` starts its `LootService` child. The existing
+client script displays carried Value and sends only a drop request when G is
+pressed. Output logs beginning `[Loot]` come from the server.
+
+1. On Play, expect five `Registered LootN` logs for the test scene, followed by
+   `Service started`. Registration reports each item's Value and effective Weight.
+   With no Weight attribute, Weight is 4. HUD reads `Carried Value: 0 | Empty hands`.
+2. Approach Loot1 within 10 studs, aim at it, and hold E for 0.2 seconds. Expect
+   `picked up Loot1: Value=10 Weight=4 WalkSpeed=12.80` for the normal base speed
+   of 16. The item follows in front of you, its prompt disappears, movement slows,
+   and the HUD reads `Carried Value: 10 | Loot1 | G: drop`.
+3. While carrying, approach another loot object and hold E. Expect
+   `Pickup rejected ... already carrying one item`. The original item and HUD
+   remain unchanged; the second item stays on the ground.
+4. Press G with game input focused (outside chat/text boxes). Expect
+   `dropped Loot1 (G requested); WalkSpeed=16.00`. The item is released five studs
+   ahead and falls onto the floor. Its prompt returns, movement returns to normal,
+   and the HUD reads `Carried Value: 0 | Empty hands`. Pick it up again to confirm
+   it remains usable. Pressing G empty-handed does nothing.
+5. Stop. In Studio Properties, add a numeric Weight attribute of 1 to Loot1 and
+   10 to Loot2. Play again. Pick up and drop each separately: Output should show
+   Weight=1 / WalkSpeed=15.20 and Weight=10 / WalkSpeed=8.00. Weight=0 gives 16.00;
+   Weight=20 reaches the maximum penalty and gives 4.80. These expectations assume
+   a base speed of 16. The saved speed from before pickup is restored on drop.
+6. While carrying, allow oxygen to hit zero outside the sub. Expect a drop log
+   with `death` or `round ended`, plus `[Loot] Round ended; pickups disabled`.
+   HUD returns to empty hands. After respawn, pickups stay disabled until Stop/Play.
+7. Optional runtime scene checks, using Studio's **Server** view: duplicate a
+   tagged loot Part with a numeric Value and expect a new registration and prompt.
+   Remove its Loot tag while carrying it: expect `item removed`, no carry weld,
+   normal speed, empty HUD, and removal of the service's prompt. Delete a carried
+   item or reset your character to verify the same carry cleanup.
+
+Use the submarine SafeZone to refill oxygen between pickups. Oxygen still drains
+at 5/sec outside, so return before it runs out. Weight penalties are proportional
+to Weight with a 70% cap; missing or invalid Weight uses 4. A missing/invalid Value
+warns and disables the pickup prompt. This slice does not bank loot or pay quota.
