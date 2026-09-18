@@ -76,3 +76,7 @@ After implementing something, state how to test it: which script runs, what to w
 in the Output window on Play, and the expected values. Use server prints during
 development so behavior shows in Output.
 
+## Commit messages
+After a change is implemented output a concise commit message
+(imperative mood, one line, describing what changed). Do not run it
+yourself; just give me the block to paste.

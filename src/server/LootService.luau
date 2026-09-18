@@ -109,7 +109,13 @@ local function pickup(player: Player, part: BasePart)
 	if (root.Position - part.Position).Magnitude > Config.LootPickupDistance then reject("out of range"); return end
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
-	rayParams.FilterDescendantsInstances = {character :: Model}
+	local excluded: {Instance} = {character :: Model}
+	local submarine = workspace:FindFirstChild("Submarine")
+	local safeZone = if submarine and submarine:IsA("Model") then submarine:FindFirstChild("SafeZone") else nil
+	if safeZone and safeZone:IsA("BasePart") then
+		table.insert(excluded, safeZone)
+	end
+	rayParams.FilterDescendantsInstances = excluded
 	local hit = workspace:Raycast(root.Position, part.Position - root.Position, rayParams)
 	if hit and hit.Instance ~= part then reject("blocked line of sight"); return end
 	local value = numericAttribute(part, "Value")
@@ -155,12 +161,16 @@ local function register(instance: Instance)
 	if registered[part] then return end
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "LootPickupPrompt"
+	-- Keep proximity input active without Roblox's floating pickup UI.
+	prompt.Style = Enum.ProximityPromptStyle.Custom
 	prompt.ActionText = "Pick up"
 	prompt.ObjectText = part.Name
 	prompt.KeyboardKeyCode = Config.LootPickupKey
 	prompt.MaxActivationDistance = Config.LootPickupDistance
 	prompt.HoldDuration = Config.LootPromptHoldDuration
-	prompt.RequiresLineOfSight = true
+	-- SafeZone is an invisible volume that otherwise occludes prompts. The
+	-- server checks visibility above, excluding only the character and SafeZone.
+	prompt.RequiresLineOfSight = false
 	prompt.Parent = part
 	local function refresh()
 		prompt.ObjectText = string.format("%s | Value %g", part.Name, numericAttribute(part, "Value") or 0)
@@ -213,7 +223,7 @@ function LootService.Start()
 		end
 		for _, player in Players:GetPlayers() do sendSnapshot(player) end
 	end)
-	print("[Loot] Service started. Hold E to pick up; G to drop. One item per player.")
+	print("[Loot] Service started. Press E to pick up; G to drop. One item per player.")
 end
 
 return LootService

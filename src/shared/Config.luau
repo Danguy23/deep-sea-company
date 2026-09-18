@@ -8,7 +8,7 @@ return table.freeze({
 	OxygenLogInterval = 5,
 	LootPickupDistance = 10,
 	LootPickupKey = Enum.KeyCode.E,
-	LootPromptHoldDuration = 0.2,
+	LootPromptHoldDuration = 0,
 	LootDefaultWeight = 4,
 	LootSpeedPenaltyPerWeight = 0.05,
 	LootMaxSpeedPenalty = 0.7,
