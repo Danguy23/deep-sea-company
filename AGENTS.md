@@ -63,6 +63,24 @@ Design:
 - Prefer ProximityPrompt for the pick-up interaction.
 - Write clean, readable code that allows humans to easily understand and edit.
 
+## Change discipline (keep the codebase lean)
+Prefer editing existing code over adding new code. Before writing anything new:
+- Check whether a suitable module, function, or config value already exists, and
+  extend or reuse it instead of creating a parallel version.
+- Do not duplicate logic. If the same behavior is needed in two places, factor it
+  into a shared function or module rather than copying it.
+- Make the smallest change that fully solves the task. Touch only what the task
+  requires; do not refactor, rename, or reorganize unrelated code unprompted.
+- Keep one responsibility per module. New functionality belongs in the existing
+  system that owns that responsibility (e.g. oxygen logic stays in OxygenService)
+  rather than in a new file, unless it is genuinely a new system.
+- Put tunable numbers in the shared Config module, never hardcoded in multiple spots.
+- Only create a new file when the functionality is a distinct system not covered by
+  an existing one. If you do add a file, say why an existing one would not fit.
+
+When a task could be done either by editing existing code or by adding new code,
+choose the edit, and briefly note what you changed and why.
+
 ## Rojo vs MCP rule (important)
 - Write all game logic as files under src/. Rojo syncs them into Studio. This is the
   versioned source of truth.
