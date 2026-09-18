@@ -15,20 +15,26 @@ The one source of fun is the decision "grab one more crate, or do I have enough 
 to make it back?" Every system exists to sharpen that greed-versus-air moment. If a
 feature does not feed that tension or the chaos around it, it is out of scope.
 
+## Milestone status
+Milestone 1 (COMPLETE): oxygen, loot grab-and-haul, quota/deposit, and the run
+state machine (Lobby -> Dive -> Return -> Payout -> next run or GameOver) are built,
+integrated, and playtested. RunService owns the lifecycle; OxygenService,
+LootService, and QuotaService expose reset/control APIs to it. Loot respawns from
+the original tagged scene parts each Dive; unbanked carried loot is lost on run end.
+
 ## Current milestone (build ONLY this)
-Milestone 1: the smallest playable single-player slice. Four systems, in order:
-1. Run state machine (server): Lobby -> Dive -> Return -> Payout -> next run or fail.
-2. Oxygen (server-authoritative): drains while a player is outside
-   the sub, refills inside it, and downs the player at zero (for our purposes in single player, the round ends).
-3. Grab-and-haul loot: pick up a loot object, carry it (slower while carrying), drop it.
-4. Quota and payout: banking loot inside the sub adds its Value; hitting the quota
-   raises it and continues to the next stage, missing it ends the run.
-Plus a minimal HUD: oxygen bar, carried value, banked value vs quota.
+Milestone 2: atmosphere and threat, the systems that make the loop tense.
+1. Light and darkness: near-black water plus a limited personal light source.
+2. One threat: a single creature that lives in the dark and hunts by light or
+   proximity, whose job is to make darkness matter and turn calm runs into panic.
+Build these one at a time, playtested and committed separately. Do not start the
+threat until light is in and working. (Real swimming/buoyancy movement is deferred; the look comes
+   first.)
 
 ## Do NOT build yet (cut list)
-Monsters or AI threats, a light/darkness system, co-op netcode beyond the trivial,
-shops, upgrades, cosmetics, monetization, procedural maps, multiple biomes, lore.
-These come after Milestone 1 is playable and fun. Do not add them unprompted.
+Co-op / multiplayer netcode beyond the trivial, shops, upgrades, cosmetics,
+monetization, procedural maps, multiple biomes, lore. Co-op is the priority after
+Milestone 2. Do not add any of these unprompted.
 
 ## World contract (what the code may assume exists)
 The 3D scene is built in Studio (by hand or via MCP as a one-time scaffold), not by

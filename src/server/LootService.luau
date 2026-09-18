@@ -4,6 +4,7 @@ local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local StarterPlayer = game:GetService("StarterPlayer")
 local SafeZoneService = require(script.Parent:WaitForChild("SafeZoneService"))
 local QuotaService = require(script.Parent:WaitForChild("QuotaService"))
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -32,6 +33,7 @@ local owners: {[BasePart]: Player} = {}
 local started = false
 local roundEnded = true
 local templates: {{part: BasePart, parent: Instance}} = {}
+local random = Random.new()
 
 local function numericAttribute(part: BasePart, name: string): number?
 	local value = part:GetAttribute(name)
@@ -45,9 +47,73 @@ local function weightOf(part: BasePart): number
 	return numericAttribute(part, "Weight") or Config.LootDefaultWeight
 end
 
+local function speedMultiplierOf(part: BasePart): number
+	return 1 - math.clamp(weightOf(part) * Config.LootSpeedPenaltyPerWeight, 0, Config.LootMaxSpeedPenalty)
+end
+
 local function applySpeed(carry: Carry)
-	local penalty = math.clamp(weightOf(carry.part) * Config.LootSpeedPenaltyPerWeight, 0, Config.LootMaxSpeedPenalty)
-	carry.humanoid.WalkSpeed = carry.baseSpeed * (1 - penalty)
+	carry.humanoid.WalkSpeed = carry.baseSpeed * speedMultiplierOf(carry.part)
+end
+
+-- Scatter authored loot, not the map. Fractions account for the slower haul home.
+local function chooseSpawn(part: BasePart, placed: {Vector3}): boolean
+	local fraction = numericAttribute(part, "SpawnRadiusFraction")
+	if not fraction then return true end
+	local zone = SafeZoneService.Find()
+	if not zone then
+		warn("[Loot] Missing SafeZone; keeping authored loot positions.")
+		return true
+	end
+	local walkSpeed = StarterPlayer.CharacterWalkSpeed
+	local secondsPerStud = 1 / walkSpeed + 1 / (walkSpeed * speedMultiplierOf(part))
+	local airSeconds = Config.OxygenMax / Config.OxygenDrainPerSecond
+	local safeDistance = (airSeconds - Config.LootSpawnInteractionSeconds) / secondsPerStud
+	local maxDistance = (airSeconds + Config.DrowningSeconds - Config.LootSpawnInteractionSeconds - Config.LootSpawnSurvivalMarginSeconds) / secondsPerStud
+	local offset = part.Position - zone.Position
+	local authoredAngle = math.atan2(offset.Z, offset.X)
+	local excluded: {Instance} = {zone}
+	for _, player in Players:GetPlayers() do
+		if player.Character then table.insert(excluded, player.Character) end
+	end
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.FilterDescendantsInstances = excluded
+	rayParams.RespectCanCollide = true
+	local overlap = OverlapParams.new()
+	overlap.FilterType = Enum.RaycastFilterType.Exclude
+	overlap.FilterDescendantsInstances = excluded
+	overlap.RespectCanCollide = true
+	local halfSize = zone.Size / 2
+	for _ = 1, Config.LootSpawnAttempts do
+		local angle = authoredAngle + random:NextNumber(-Config.LootSpawnAngleJitter, Config.LootSpawnAngleJitter)
+		local direction = Vector3.new(math.cos(angle), 0, math.sin(angle))
+		local localDirection = zone.CFrame:VectorToObjectSpace(direction)
+		local edgeDistance = math.min(
+			halfSize.X / math.max(math.abs(localDirection.X), 0.0001),
+			halfSize.Z / math.max(math.abs(localDirection.Z), 0.0001)
+		)
+		local distance = math.clamp(safeDistance * (fraction + random:NextNumber(-Config.LootSpawnRadiusJitter, Config.LootSpawnRadiusJitter)), 0, maxDistance)
+		local point = zone.Position + direction * (edgeDistance + distance)
+		local ground = workspace:Raycast(point + Vector3.yAxis * Config.LootSpawnRayHeight, -Vector3.yAxis * Config.LootSpawnRayHeight * 2, rayParams)
+		if not ground or ground.Normal.Y < Config.LootSpawnMinGroundNormalY then continue end
+		local position = ground.Position + Vector3.yAxis * (part.Size.Y / 2 + Config.LootSpawnClearance)
+		local spawnCFrame = CFrame.new(position) -- Keep crates upright on the floor.
+		if #workspace:GetPartBoundsInBox(spawnCFrame, part.Size, overlap) > 0 then continue end
+		local separated = true
+		for _, other in placed do
+			if (other - position).Magnitude < math.max(Config.LootSpawnMinSeparation, part.Size.Magnitude) then separated = false; break end
+		end
+		if not separated then continue end
+		-- Reject detours and blocked sightlines rather than hide unreachable rewards.
+		local sightEnd = Vector3.new(position.X, zone.Position.Y, position.Z)
+		if workspace:Raycast(zone.Position, sightEnd - zone.Position, rayParams) then continue end
+		part.CFrame = spawnCFrame
+		part.Anchored = true
+		print(string.format("[Loot] Spawn %s: %.1f studs outside sub, round trip ~%.1fs (air %.1fs + drowning %gs).", part.Name, distance, distance * secondsPerStud + Config.LootSpawnInteractionSeconds, airSeconds, Config.DrowningSeconds))
+		return true
+	end
+	warn("[Loot] No clear, reachable spawn for " .. part.Name .. "; check scene geometry / SpawnRadiusFraction.")
+	return false
 end
 
 local function sendSnapshot(player: Player)
@@ -262,8 +328,12 @@ function LootService.BeginRound()
 		end
 	end
 	roundEnded = false
+	local placed: {Vector3} = {}
+	local spawned = 0
 	for _, template in templates do
 		local part = template.part:Clone()
+		if not chooseSpawn(part, placed) then part:Destroy(); continue end
+		table.insert(placed, part.Position)
 		local parent = template.parent
 		if parent ~= workspace and not parent:IsDescendantOf(workspace) then
 			warn("[Loot] Original loot parent missing; respawning in Workspace.")
@@ -272,8 +342,9 @@ function LootService.BeginRound()
 		part.Parent = parent
 		CollectionService:AddTag(part, "Loot")
 		register(part)
+		spawned += 1
 	end
-	print(string.format("[Loot] Fresh dive: respawned %d scene loot Parts.", #templates))
+	print(string.format("[Loot] Fresh dive: respawned %d scene loot Parts.", spawned))
 end
 
 function LootService.Start()

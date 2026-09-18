@@ -23,7 +23,7 @@ hud.Parent = playerGui
 local panel = Instance.new("Frame")
 panel.AnchorPoint = Vector2.new(0.5, 1)
 panel.Position = UDim2.new(0.5, 0, 1, -24)
-panel.Size = UDim2.fromOffset(380, 132)
+panel.Size = UDim2.fromOffset(380, 164)
 panel.BackgroundColor3 = Color3.fromRGB(20, 30, 40)
 panel.BorderSizePixel = 0
 panel.Parent = hud
@@ -80,6 +80,16 @@ quotaUpdated.OnClientEvent:Connect(function(snapshot: QuotaTypes.Snapshot)
 	quotaLabel.Text = string.format("Banked: %g / %g%s", snapshot.bankedValue, snapshot.quota, if snapshot.met then " | Quota met" else "")
 end)
 
+local healthLabel = Instance.new("TextLabel")
+healthLabel.Position = UDim2.fromOffset(10, 128)
+healthLabel.Size = UDim2.new(1, -20, 0, 28)
+healthLabel.BackgroundTransparency = 1
+healthLabel.Font = Enum.Font.GothamBold
+healthLabel.TextSize = 16
+healthLabel.TextColor3 = Color3.new(1, 1, 1)
+healthLabel.Text = "HP: waiting for server..."
+healthLabel.Parent = panel
+
 UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
 	if not processed and input.KeyCode == Config.LootDropKey and not UserInputService:GetFocusedTextBox() then
 		dropRequested:FireServer()
@@ -94,6 +104,9 @@ oxygenUpdated.OnClientEvent:Connect(function(snapshot: OxygenTypes.Snapshot)
 		elseif snapshot.downed then "Downed"
 		elseif not snapshot.available then "SafeZone missing"
 		elseif snapshot.inSub then "In sub"
+		elseif snapshot.oxygen <= 0 then "OUT OF AIR!"
 		else "Outside sub"
 	label.Text = string.format("Oxygen %d/%d | %s", math.ceil(snapshot.oxygen), snapshot.maximum, status)
+	healthLabel.Text = string.format("HP %d/%d", math.ceil(snapshot.health), snapshot.healthMaximum)
+	healthLabel.TextColor3 = if snapshot.health < snapshot.healthMaximum then Color3.fromRGB(235, 85, 70) else Color3.new(1, 1, 1)
 end)

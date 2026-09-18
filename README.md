@@ -32,9 +32,9 @@ server snapshots. All game logic lives under `src/`; no Studio code paste is nee
 1. Filter Output for `[Run]`. Expect `Lobby | waiting for a living player`, followed
    by `Lobby -> Dive | dive 1; banked 0 / 200; oxygen 100` after 3 seconds with a
    living character present. Oxygen and pickup are paused before Dive.
-2. Expect `[Loot] Fresh dive: respawned 5 scene loot Parts` for the original test
+2. Expect `[Loot] Fresh dive: respawned 10 scene loot Parts` for the current test
    scene (otherwise the number of tagged scene Parts). HUD shows empty hands,
-   `Banked: 0 / 200`, and full oxygen at the start of Dive.
+   `Banked: 0 / 200`, full oxygen, and `HP 100/100` at the start of Dive.
 3. Outside SafeZone, oxygen drains at 5/sec: about 75 after 5 seconds and 50 after
    10 seconds. Inside SafeZone it refills at 20/sec up to 100. Filter `[Oxygen]`
    for `outside`, `entered sub`, and periodic values. Refill between loot trips.
@@ -55,19 +55,20 @@ server snapshots. All game logic lives under `src/`; no Studio code paste is nee
    `Payout -> Dive | dive 2; banked 0 / 250; oxygen 100`.
    An overshoot is also success; its actual banked value appears in Payout.
 5. During Return/Payout, oxygen pauses and pickups/deposits are disabled. In the
-   next Dive, HUD shows 0/250, full oxygen, and empty hands. All original tagged
-   Parts reappear at their original positions with their original attributes;
+   next Dive, HUD shows 0/250, full oxygen, 100 HP, and empty hands. All original tagged
+   Parts reappear with their original attributes and newly scattered positions;
    dropped/moved leftovers disappear. No extra Parts or pickup prompts accumulate.
-6. For a second success, the original scene's Loot2 + Loot3 + Loot4 + Loot5 total
-   250. The next quota is 300. The original five Parts total only 260, so reaching
-   300 requires more/higher-value scene loot; the fixed scene is intentionally
-   respawned, not procedurally expanded.
+6. For a second success, Loot2 + Loot3 + Loot4 + Loot5 total 250. The next quota
+   is 300. The current ten scene Parts total 975; higher-value loot is farther
+   out. Refill fully between trips and plan for the slower haul home.
 
 ### Failure, unbanked loot loss, and automatic reset
 
 1. During any Dive, pick up a Part and stay outside until oxygen reaches zero
    (about 20 seconds from full). Do not bank enough to meet quota.
-2. Expect `[Oxygen] ... DOWNED at 0/100`, followed by
+2. At zero oxygen, expect `[Oxygen] ... OUT OF AIR` and HP draining at 20/sec.
+   The character remains able to move and carry loot. After another five seconds
+   without air, expect `[Oxygen] ... DOWNED at HP 0/100`, followed by
    `[Run] Dive -> Return | all players downed/out of air`,
    `Return -> Payout | banked <actual> / <quota>; FAILED`, and
    `Payout -> GameOver | quota missed; resetting run`.
@@ -96,6 +97,36 @@ adding runtime prompts. Stop/Play after editing the scene to capture a new layou
 Runtime-added loot is cleared on the next Dive and is not added to the original set.
 All tunables live in `src/shared/Config.luau`: LobbyDelay=3, ReturnDelay=1,
 PayoutDelay=2, GameOverDelay=2, StartingQuota=200, and QuotaIncrease=50.
+
+## Loot range and drowning checks
+
+Save the Studio place after scene edits: the ten tagged crates are physical scene
+data, so Rojo builds do not include them. Each has a `SpawnRadiusFraction` attribute
+and numeric `Value`. The fractions are 0.25, 0.35, 0.45, 0.55, 0.65, 0.8, 0.9,
+0.96, 1.03, and 1.07. Values rise from 10 to 180 with distance. Parts without the
+fraction retain their authored positions.
+
+`ServerScriptService.Server` runs OxygenService and LootService through RunService;
+`StarterPlayerScripts.Client` displays oxygen and HP. On Play, filter Output for
+`[Loot] Spawn`: expect estimated trips of roughly 5–22 seconds, calculated using
+20 seconds of oxygen, the item's carrying penalty, and one second for interaction.
+Spawns are capped to leave two seconds before drowning death. They vary in angle
+and distance each Dive, sit on level ground, and must have a clear route/sightline
+from the sub. A failed placement warns loudly instead of spawning hidden loot.
+
+With a full tank, stay outside: HP should stay at 100 for 20 seconds, then reach
+about 80, 60, 40, 20, and 0 over the next five seconds. At about 22 seconds, return
+to SafeZone: expect the `rescued in sub` log, about 60 HP held steady, and oxygen
+refilling at 20/sec. HP resets to 100 on a new Dive or respawn. Return/Payout pause
+oxygen and drowning. Approach Loot10, press E, return and press G: expect carrying
+speed 12.8, a visible crate/HUD, and a deposit of 180.
+
+Verification: Rojo build and whitespace checks pass. Throwaway Studio harnesses
+passed 30 dives with ten randomized, grounded crates each and estimated trips
+between 5.5 and 21.7 seconds; oxygen checks passed partial-tick damage, five-second
+drowning, rescue at 60 HP, pause, HP reset, and suppression of passive regeneration.
+Live Play confirmed ten spawns, drowning/run-end logs, visibility and pickup of
+Loot10, carrying speed 12.8, and its 180-value deposit.
 
 Local verification: Rojo build succeeds; server sources parse in Studio; a
 throwaway RunService harness passes lobby timing, success/quota increase, duplicate
