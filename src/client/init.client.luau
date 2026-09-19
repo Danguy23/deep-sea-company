@@ -9,89 +9,132 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local OxygenTypes = require(Shared:WaitForChild("OxygenTypes"))
 local LootTypes = require(Shared:WaitForChild("LootTypes"))
 local QuotaTypes = require(Shared:WaitForChild("QuotaTypes"))
+local MovementTypes = require(Shared:WaitForChild("MovementTypes"))
 local Config = require(Shared:WaitForChild("Config"))
 local lootUpdated = Shared:WaitForChild("Remotes"):WaitForChild("LootUpdated") :: RemoteEvent
 local dropRequested = Shared:WaitForChild("Remotes"):WaitForChild("DropLoot") :: RemoteEvent
+local selectLootSlot = Shared:WaitForChild("Remotes"):WaitForChild("SelectLootSlot") :: RemoteEvent
 local oxygenUpdated = Shared:WaitForChild("Remotes"):WaitForChild("OxygenUpdated") :: RemoteEvent
 local quotaUpdated = Shared:WaitForChild("Remotes"):WaitForChild("QuotaUpdated") :: RemoteEvent
 local flashlightInput = Shared:WaitForChild("Remotes"):WaitForChild("FlashlightInput") :: RemoteEvent
 local flashlightUpdated = Shared:WaitForChild("Remotes"):WaitForChild("FlashlightUpdated") :: RemoteEvent
-local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
+local sprintInput = Shared:WaitForChild("Remotes"):WaitForChild("SprintInput") :: RemoteEvent
+local movementUpdated = Shared:WaitForChild("Remotes"):WaitForChild("MovementUpdated") :: RemoteEvent
+local localPlayer = Players.LocalPlayer
+localPlayer.CameraMode = Enum.CameraMode.LockFirstPerson
+local playerGui = localPlayer:WaitForChild("PlayerGui")
 
 local hud = Instance.new("ScreenGui")
-hud.Name = "OxygenHUD"
+hud.Name = "DiveHUD"
 hud.ResetOnSpawn = false
 hud.Parent = playerGui
 
-local panel = Instance.new("Frame")
-panel.AnchorPoint = Vector2.new(0.5, 1)
-panel.Position = UDim2.new(0.5, 0, 1, -24)
-panel.Size = UDim2.fromOffset(380, 164)
-panel.BackgroundColor3 = Color3.fromRGB(20, 30, 40)
-panel.BorderSizePixel = 0
-panel.Parent = hud
-
-local label = Instance.new("TextLabel")
-label.Position = UDim2.fromOffset(10, 6)
-label.Size = UDim2.new(1, -20, 0, 28)
-label.BackgroundTransparency = 1
-label.Font = Enum.Font.GothamBold
-label.TextSize = 16
-label.TextColor3 = Color3.new(1, 1, 1)
-label.Text = "Oxygen: waiting for server..."
-label.Parent = panel
-
-local track = Instance.new("Frame")
-track.Position = UDim2.fromOffset(10, 40)
-track.Size = UDim2.new(1, -20, 0, 18)
-track.BackgroundColor3 = Color3.fromRGB(50, 60, 70)
-track.BorderSizePixel = 0
-track.Parent = panel
-
-local fill = Instance.new("Frame")
-fill.Size = UDim2.fromScale(0, 1)
-fill.BackgroundColor3 = Color3.fromRGB(65, 210, 160)
-fill.BorderSizePixel = 0
-fill.Parent = track
-
-local lootLabel = Instance.new("TextLabel")
-lootLabel.Position = UDim2.fromOffset(10, 64)
-lootLabel.Size = UDim2.new(1, -20, 0, 28)
-lootLabel.BackgroundTransparency = 1
-lootLabel.Font = Enum.Font.Gotham
-lootLabel.TextSize = 14
-lootLabel.TextColor3 = Color3.new(1, 1, 1)
-lootLabel.Text = "Carried Value: waiting for server..."
-lootLabel.Parent = panel
-
-lootUpdated.OnClientEvent:Connect(function(snapshot: LootTypes.Snapshot)
-	lootLabel.Text = if snapshot.carrying then string.format("Carried Value: %g | %s | G: drop/deposit", snapshot.value, snapshot.name)
-		else "Carried Value: 0 | Empty hands"
-end)
+local movementSettings = Config.Movement
 
 local quotaLabel = Instance.new("TextLabel")
-quotaLabel.Position = UDim2.fromOffset(10, 96)
-quotaLabel.Size = UDim2.new(1, -20, 0, 28)
-quotaLabel.BackgroundTransparency = 1
+quotaLabel.AnchorPoint = Vector2.new(0.5, 0)
+quotaLabel.Position = UDim2.new(0.5, 0, 0, 18)
+quotaLabel.Size = UDim2.fromOffset(430, 42)
+quotaLabel.BackgroundColor3 = Color3.fromRGB(12, 24, 28)
+quotaLabel.BackgroundTransparency = 0.15
+quotaLabel.BorderSizePixel = 0
 quotaLabel.Font = Enum.Font.GothamBold
-quotaLabel.TextSize = 16
+quotaLabel.TextSize = 22
 quotaLabel.TextColor3 = Color3.new(1, 1, 1)
 quotaLabel.Text = "Banked: waiting for server..."
-quotaLabel.Parent = panel
+quotaLabel.Parent = hud
 
-quotaUpdated.OnClientEvent:Connect(function(snapshot: QuotaTypes.Snapshot)
-	quotaLabel.Text = string.format("Banked: %g / %g%s", snapshot.bankedValue, snapshot.quota, if snapshot.met then " | Quota met" else "")
+local statusPanel = Instance.new("Frame")
+statusPanel.Position = UDim2.fromOffset(24, 24)
+statusPanel.Size = UDim2.fromOffset(280, 116)
+statusPanel.BackgroundColor3 = Color3.fromRGB(12, 24, 28)
+statusPanel.BackgroundTransparency = 0.15
+statusPanel.BorderSizePixel = 0
+statusPanel.Parent = hud
+
+local function createStatusBar(name: string, y: number, color: Color3): (Frame, TextLabel)
+	local text = Instance.new("TextLabel")
+	text.Position = UDim2.fromOffset(10, y)
+	text.Size = UDim2.fromOffset(62, 26)
+	text.BackgroundTransparency = 1
+	text.Font = Enum.Font.GothamBold
+	text.Text = name
+	text.TextColor3 = color
+	text.TextSize = 14
+	text.TextXAlignment = Enum.TextXAlignment.Left
+	text.Parent = statusPanel
+	local track = Instance.new("Frame")
+	track.Position = UDim2.fromOffset(72, y + 4)
+	track.Size = UDim2.fromOffset(196, 18)
+	track.BackgroundColor3 = Color3.fromRGB(42, 52, 56)
+	track.BorderSizePixel = 0
+	track.Parent = statusPanel
+	local fill = Instance.new("Frame")
+	fill.Name = name .. "Fill"
+	fill.Size = UDim2.fromScale(1, 1)
+	fill.BackgroundColor3 = color
+	fill.BorderSizePixel = 0
+	fill.Parent = track
+	return fill, text
+end
+
+local healthFill, healthLabel = createStatusBar("HP", 8, Color3.fromRGB(225, 65, 65))
+local staminaFill, staminaLabel = createStatusBar("STAM", 43, Color3.fromRGB(70, 220, 115))
+local oxygenFill, oxygenLabel = createStatusBar("AIR", 78, Color3.fromRGB(80, 195, 225))
+
+local inventoryConsole = Instance.new("Frame")
+inventoryConsole.AnchorPoint = Vector2.new(0.5, 1)
+inventoryConsole.Position = UDim2.new(0.5, 0, 1, -24)
+inventoryConsole.Size = UDim2.fromOffset(392, 92)
+inventoryConsole.BackgroundColor3 = Color3.fromRGB(12, 24, 28)
+inventoryConsole.BackgroundTransparency = 0.1
+inventoryConsole.BorderSizePixel = 0
+inventoryConsole.Parent = hud
+
+local slotLabels: {TextLabel} = {}
+local slotStrokes: {UIStroke} = {}
+for index = 1, Config.LootInventoryCapacity do
+	local slot = Instance.new("TextLabel")
+	slot.Position = UDim2.fromOffset(8 + (index - 1) * 96, 8)
+	slot.Size = UDim2.fromOffset(88, 76)
+	slot.BackgroundColor3 = Color3.fromRGB(28, 42, 46)
+	slot.BorderSizePixel = 0
+	slot.Font = Enum.Font.GothamBold
+	slot.Text = string.format("%d\nEMPTY", index)
+	slot.TextColor3 = Color3.fromRGB(205, 225, 225)
+	slot.TextSize = 12
+	slot.TextWrapped = true
+	slot.Parent = inventoryConsole
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(80, 105, 110)
+	stroke.Thickness = 2
+	stroke.Parent = slot
+	table.insert(slotLabels, slot)
+	table.insert(slotStrokes, stroke)
+end
+
+lootUpdated.OnClientEvent:Connect(function(snapshot: LootTypes.Snapshot)
+	for index = 1, snapshot.capacity do
+		local slot = snapshot.slots[index]
+		slotLabels[index].Text = if slot and slot.occupied
+			then string.format("%d | %s\n%s\n$%g", index, slot.sizeClass, slot.name, slot.value)
+			else string.format("%d\nEMPTY", index)
+		slotStrokes[index].Color = if index == snapshot.selected then Color3.fromRGB(110, 235, 205)
+			else Color3.fromRGB(80, 105, 110)
+		slotStrokes[index].Thickness = if index == snapshot.selected then 4 else 2
+	end
 end)
 
-local healthLabel = Instance.new("TextLabel")
-healthLabel.Position = UDim2.fromOffset(10, 128)
-healthLabel.Size = UDim2.new(1, -20, 0, 28)
-healthLabel.BackgroundTransparency = 1
-healthLabel.Font = Enum.Font.GothamBold
-healthLabel.TextSize = 16
-healthLabel.TextColor3 = Color3.new(1, 1, 1)
-healthLabel.Text = "HP: waiting for server..."
-healthLabel.Parent = panel
+movementUpdated.OnClientEvent:Connect(function(snapshot: MovementTypes.Snapshot)
+	local fraction = math.clamp(snapshot.stamina / snapshot.maximum, 0, 1)
+	staminaFill.Size = UDim2.fromScale(fraction, 1)
+	staminaLabel.Text = if snapshot.exhausted then "TIRED" else "STAM"
+end)
+
+quotaUpdated.OnClientEvent:Connect(function(snapshot: QuotaTypes.Snapshot)
+	quotaLabel.Text = string.format("Banked: %g / %g%s", snapshot.bankedValue, snapshot.quota,
+		if snapshot.met then " | QUOTA MET" else "")
+end)
 
 local flashlightEnabled = false
 local aimElapsed = 0
@@ -189,7 +232,18 @@ RunService.Heartbeat:Connect(function(deltaTime: number)
 end)
 
 UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
-	if processed or UserInputService:GetFocusedTextBox() then return end
+	if UserInputService:GetFocusedTextBox() then return end
+	if input.KeyCode == movementSettings.SprintKey then
+		sprintInput:FireServer(true)
+		return
+	end
+	if processed then return end
+	for index, keyCode in Config.LootSlotKeys do
+		if input.KeyCode == keyCode then
+			selectLootSlot:FireServer(index)
+			return
+		end
+	end
 	if input.KeyCode == Config.LootDropKey then
 		dropRequested:FireServer()
 	elseif input.KeyCode == Config.Flashlight.ToggleKey then
@@ -197,20 +251,31 @@ UserInputService.InputBegan:Connect(function(input: InputObject, processed: bool
 	end
 end)
 
+UserInputService.InputEnded:Connect(function(input: InputObject)
+	if input.KeyCode == movementSettings.SprintKey then sprintInput:FireServer(false) end
+end)
+
+UserInputService.WindowFocusReleased:Connect(function()
+	sprintInput:FireServer(false)
+end)
+
 oxygenUpdated.OnClientEvent:Connect(function(snapshot: OxygenTypes.Snapshot)
 	safeZonePosition = snapshot.safeZonePosition
 	showSafeZoneMarker = snapshot.available and not snapshot.inSub and not snapshot.roundEnded
 		and not snapshot.downed and snapshot.health > 0
-	local fraction = math.clamp(snapshot.oxygen / snapshot.maximum, 0, 1)
-	fill.Size = UDim2.fromScale(fraction, 1)
-	fill.BackgroundColor3 = if fraction <= 0.25 then Color3.fromRGB(235, 85, 70) else Color3.fromRGB(65, 210, 160)
+	local oxygenFraction = math.clamp(snapshot.oxygen / snapshot.maximum, 0, 1)
+	oxygenFill.Size = UDim2.fromScale(oxygenFraction, 1)
+	oxygenFill.BackgroundColor3 = if oxygenFraction <= 0.25 then Color3.fromRGB(235, 85, 70)
+		else Color3.fromRGB(80, 195, 225)
+	local healthFraction = math.clamp(snapshot.health / snapshot.healthMaximum, 0, 1)
+	healthFill.Size = UDim2.fromScale(healthFraction, 1)
 	local status = if snapshot.roundEnded then "Round ended"
 		elseif snapshot.downed then "Downed"
 		elseif not snapshot.available then "SafeZone missing"
 		elseif snapshot.inSub then "In sub"
 		elseif snapshot.oxygen <= 0 then "OUT OF AIR!"
 		else "Outside sub"
-	label.Text = string.format("Oxygen %d/%d | %s", math.ceil(snapshot.oxygen), snapshot.maximum, status)
-	healthLabel.Text = string.format("HP %d/%d", math.ceil(snapshot.health), snapshot.healthMaximum)
-	healthLabel.TextColor3 = if snapshot.health < snapshot.healthMaximum then Color3.fromRGB(235, 85, 70) else Color3.new(1, 1, 1)
+	oxygenLabel.Text = string.format("AIR %d", math.ceil(snapshot.oxygen))
+	healthLabel.Text = string.format("HP %d", math.ceil(snapshot.health))
+	if status == "Downed" then healthLabel.Text = "DOWN" end
 end)

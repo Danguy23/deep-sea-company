@@ -4,77 +4,109 @@ local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local StarterPlayer = game:GetService("StarterPlayer")
+local ServerStorage = game:GetService("ServerStorage")
 local SafeZoneService = require(script.Parent:WaitForChild("SafeZoneService"))
 local QuotaService = require(script.Parent:WaitForChild("QuotaService"))
+local MovementService = require(script.Parent:WaitForChild("MovementService"))
+
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = require(Shared:WaitForChild("Config"))
 local LootTypes = require(Shared:WaitForChild("LootTypes"))
 local remotes = Shared:WaitForChild("Remotes")
 local lootUpdated = remotes:WaitForChild("LootUpdated") :: RemoteEvent
 local dropRequested = remotes:WaitForChild("DropLoot") :: RemoteEvent
+local selectRequested = remotes:WaitForChild("SelectLootSlot") :: RemoteEvent
 
+type SizeClass = "Small" | "Medium" | "Large"
 type Registration = {prompt: ProximityPrompt, connections: {RBXScriptConnection}}
-type Carry = {
-	part: BasePart,
-	root: BasePart,
-	humanoid: Humanoid,
-	weld: WeldConstraint,
-	baseSpeed: number,
-	canCollide: boolean,
-	massless: boolean,
-	deathConnection: RBXScriptConnection,
-}
+type InventoryItem = {part: BasePart, originalParent: Instance, canCollide: boolean, massless: boolean, sizeClass: SizeClass}
+type InventoryState = {slots: {[number]: InventoryItem}, selected: number}
+type Template = {part: BasePart, parent: Instance, sizeClass: SizeClass}
 
 local LootService = {}
 local registered: {[BasePart]: Registration} = {}
-local carried: {[Player]: Carry} = {}
 local owners: {[BasePart]: Player} = {}
+local inventories: {[Player]: InventoryState} = {}
+local templates: {Template} = {}
+local random = Random.new()
 local started = false
 local roundEnded = true
-local templates: {{part: BasePart, parent: Instance}} = {}
-local random = Random.new()
+local inventoryFolder: Folder? = nil
 
 local function numericAttribute(part: BasePart, name: string): number?
 	local value = part:GetAttribute(name)
-	if typeof(value) == "number" and value == value and math.abs(value) < math.huge and value >= 0 then
-		return value
-	end
+	if typeof(value) == "number" and value == value and math.abs(value) < math.huge and value >= 0 then return value end
 	return nil
 end
 
-local function weightOf(part: BasePart): number
-	return numericAttribute(part, "Weight") or Config.LootDefaultWeight
+local function sizeClassOf(part: BasePart): SizeClass?
+	local value = part:GetAttribute("SizeClass")
+	if value == "Small" or value == "Medium" or value == "Large" then return value end
+	return nil
 end
 
-local function speedMultiplierOf(part: BasePart): number
-	return 1 - math.clamp(weightOf(part) * Config.LootSpeedPenaltyPerWeight, 0, Config.LootMaxSpeedPenalty)
+local function sizeScale(sizeClass: SizeClass): number
+	if sizeClass == "Small" then return Config.LootSmallScale end
+	if sizeClass == "Large" then return Config.LootLargeScale end
+	return Config.LootMediumScale
 end
 
-local function applySpeed(carry: Carry)
-	carry.humanoid.WalkSpeed = carry.baseSpeed * speedMultiplierOf(carry.part)
+local function ensureInventory(player: Player): InventoryState
+	local state = inventories[player]
+	if state then return state end
+	state = {slots = {}, selected = 1}
+	inventories[player] = state
+	return state
 end
 
--- Scatter authored loot, not the map. Fractions account for the slower haul home.
+local function largeItemCount(state: InventoryState): number
+	local count = 0
+	for _, item in state.slots do if item.sizeClass == "Large" then count += 1 end end
+	return count
+end
+
+local function applyInventorySpeed(player: Player, state: InventoryState)
+	local penalty = math.clamp(largeItemCount(state) * Config.LootLargeSpeedPenaltyPerItem, 0, Config.LootMaxSpeedPenalty)
+	MovementService.SetCarryMultiplier(player, 1 - penalty)
+end
+
+local function sendSnapshot(player: Player)
+	local state = ensureInventory(player)
+	local slots: {LootTypes.SlotSnapshot} = {}
+	for index = 1, Config.LootInventoryCapacity do
+		local item = state.slots[index]
+		table.insert(slots, {
+			occupied = item ~= nil,
+			name = if item then item.part.Name else "",
+			value = if item then numericAttribute(item.part, "Value") or 0 else 0,
+			sizeClass = if item then item.sizeClass else "",
+		})
+	end
+	local snapshot: LootTypes.Snapshot = {slots = slots, selected = state.selected, capacity = Config.LootInventoryCapacity}
+	lootUpdated:FireClient(player, snapshot)
+end
+
+local function firstEmptySlot(state: InventoryState): number?
+	for index = 1, Config.LootInventoryCapacity do if not state.slots[index] then return index end end
+	return nil
+end
+
 local function chooseSpawn(part: BasePart, placed: {Vector3}): boolean
 	local fraction = numericAttribute(part, "SpawnRadiusFraction")
 	if not fraction then return true end
 	local zone = SafeZoneService.Find()
-	if not zone then
-		warn("[Loot] Missing SafeZone; keeping authored loot positions.")
-		return true
-	end
-	local walkSpeed = StarterPlayer.CharacterWalkSpeed
-	local secondsPerStud = 1 / walkSpeed + 1 / (walkSpeed * speedMultiplierOf(part))
+	if not zone then warn("[Loot] Missing SafeZone; keeping authored loot positions."); return true end
+	local largePenalty = if sizeClassOf(part) == "Large" then Config.LootLargeSpeedPenaltyPerItem else 0
+	local haulSpeed = Config.Movement.WalkSpeed * (1 - largePenalty)
+	local secondsPerStud = 1 / Config.Movement.WalkSpeed + 1 / haulSpeed
 	local airSeconds = Config.OxygenMax / Config.OxygenDrainPerSecond
 	local safeDistance = (airSeconds - Config.LootSpawnInteractionSeconds) / secondsPerStud
-	local maxDistance = (airSeconds + Config.DrowningSeconds - Config.LootSpawnInteractionSeconds - Config.LootSpawnSurvivalMarginSeconds) / secondsPerStud
+	local maxDistance = (airSeconds + Config.DrowningSeconds - Config.LootSpawnInteractionSeconds
+		- Config.LootSpawnSurvivalMarginSeconds) / secondsPerStud
 	local offset = part.Position - zone.Position
 	local authoredAngle = math.atan2(offset.Z, offset.X)
 	local excluded: {Instance} = {zone}
-	for _, player in Players:GetPlayers() do
-		if player.Character then table.insert(excluded, player.Character) end
-	end
+	for _, player in Players:GetPlayers() do if player.Character then table.insert(excluded, player.Character) end end
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 	rayParams.FilterDescendantsInstances = excluded
@@ -88,133 +120,110 @@ local function chooseSpawn(part: BasePart, placed: {Vector3}): boolean
 		local angle = authoredAngle + random:NextNumber(-Config.LootSpawnAngleJitter, Config.LootSpawnAngleJitter)
 		local direction = Vector3.new(math.cos(angle), 0, math.sin(angle))
 		local localDirection = zone.CFrame:VectorToObjectSpace(direction)
-		local edgeDistance = math.min(
-			halfSize.X / math.max(math.abs(localDirection.X), 0.0001),
-			halfSize.Z / math.max(math.abs(localDirection.Z), 0.0001)
-		)
-		local distance = math.clamp(safeDistance * (fraction + random:NextNumber(-Config.LootSpawnRadiusJitter, Config.LootSpawnRadiusJitter)), 0, maxDistance)
+		local edgeDistance = math.min(halfSize.X / math.max(math.abs(localDirection.X), 0.0001),
+			halfSize.Z / math.max(math.abs(localDirection.Z), 0.0001))
+		local distance = math.clamp(safeDistance * (fraction
+			+ random:NextNumber(-Config.LootSpawnRadiusJitter, Config.LootSpawnRadiusJitter)), 0, maxDistance)
 		local point = zone.Position + direction * (edgeDistance + distance)
-		local ground = workspace:Raycast(point + Vector3.yAxis * Config.LootSpawnRayHeight, -Vector3.yAxis * Config.LootSpawnRayHeight * 2, rayParams)
+		local ground = workspace:Raycast(point + Vector3.yAxis * Config.LootSpawnRayHeight,
+			-Vector3.yAxis * Config.LootSpawnRayHeight * 2, rayParams)
 		if not ground or ground.Normal.Y < Config.LootSpawnMinGroundNormalY then continue end
 		local position = ground.Position + Vector3.yAxis * (part.Size.Y / 2 + Config.LootSpawnClearance)
-		local spawnCFrame = CFrame.new(position) -- Keep crates upright on the floor.
+		local spawnCFrame = CFrame.new(position)
 		if #workspace:GetPartBoundsInBox(spawnCFrame, part.Size, overlap) > 0 then continue end
 		local separated = true
 		for _, other in placed do
 			if (other - position).Magnitude < math.max(Config.LootSpawnMinSeparation, part.Size.Magnitude) then separated = false; break end
 		end
 		if not separated then continue end
-		-- Reject detours and blocked sightlines rather than hide unreachable rewards.
 		local sightEnd = Vector3.new(position.X, zone.Position.Y, position.Z)
 		if workspace:Raycast(zone.Position, sightEnd - zone.Position, rayParams) then continue end
 		part.CFrame = spawnCFrame
 		part.Anchored = true
-		print(string.format("[Loot] Spawn %s: %.1f studs outside sub, round trip ~%.1fs (air %.1fs + drowning %gs).", part.Name, distance, distance * secondsPerStud + Config.LootSpawnInteractionSeconds, airSeconds, Config.DrowningSeconds))
+		print(string.format("[Loot] Spawn %s [%s]: %.1f studs outside sub.", part.Name, sizeClassOf(part) or "Medium", distance))
 		return true
 	end
 	warn("[Loot] No clear, reachable spawn for " .. part.Name .. "; check scene geometry / SpawnRadiusFraction.")
 	return false
 end
 
-local function sendSnapshot(player: Player)
-	local carry = carried[player]
-	local snapshot: LootTypes.Snapshot = {
-		carrying = carry ~= nil,
-		name = if carry then carry.part.Name else "",
-		value = if carry then numericAttribute(carry.part, "Value") or 0 else 0,
-		weight = if carry then weightOf(carry.part) else 0,
-	}
-	lootUpdated:FireClient(player, snapshot)
+local function clearSlot(player: Player, state: InventoryState, slot: number): InventoryItem?
+	local item = state.slots[slot]
+	if not item then return nil end
+	state.slots[slot] = nil
+	owners[item.part] = nil
+	applyInventorySpeed(player, state)
+	return item
 end
 
-local function releaseCarry(player: Player): Carry?
-	local carry = carried[player]
-	if not carry then
-		return nil
-	end
-	-- Clear ownership before changing physics or firing any callbacks.
-	carried[player] = nil
-	owners[carry.part] = nil
-	carry.deathConnection:Disconnect()
-	carry.weld:Destroy()
-	carry.humanoid.WalkSpeed = carry.baseSpeed
-	return carry
-end
-
-local function drop(player: Player, reason: string)
-	local carry = releaseCarry(player)
-	if not carry then
-		return
-	end
-	local part = carry.part
-	part.CanCollide = carry.canCollide
-	part.Massless = carry.massless
-	if part:IsDescendantOf(workspace) then
-		part.CFrame = carry.root.CFrame * Config.LootDropOffset
+local function dropSlot(player: Player, slot: number, reason: string)
+	local state = ensureInventory(player)
+	local item = clearSlot(player, state, slot)
+	if not item then return end
+	local part = item.part
+	local character = player.Character
+	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
+	if not root or not root:IsA("BasePart") or not registered[part] then part:Destroy()
+	else
+		local parent = item.originalParent
+		if parent ~= workspace and not parent:IsDescendantOf(workspace) then parent = workspace end
+		part.Parent = parent
+		part.CFrame = root.CFrame * Config.LootDropOffset
+			* CFrame.new((slot - (Config.LootInventoryCapacity + 1) / 2) * Config.LootDropSlotSpacing, 0, 0)
+		part.CanCollide = item.canCollide
+		part.Massless = item.massless
 		part.Anchored = false
 		part.AssemblyLinearVelocity = Vector3.zero
 		part.AssemblyAngularVelocity = Vector3.zero
-		local canSetOwnership = part:CanSetNetworkOwnership()
-		if canSetOwnership then
-			part:SetNetworkOwner(nil)
-		end
+		if part:CanSetNetworkOwnership() then part:SetNetworkOwner(nil) end
+		registered[part].prompt.Enabled = not roundEnded
 	end
-	local entry = registered[part]
-	if entry then
-		entry.prompt.Enabled = not roundEnded and part:IsDescendantOf(workspace) and numericAttribute(part, "Value") ~= nil
-	end
-	print(string.format("[Loot] %s dropped %s (%s); WalkSpeed=%.2f", player.Name, part.Name, reason, carry.baseSpeed))
-	if player.Parent == Players then
-		sendSnapshot(player)
-	end
+	print(string.format("[Loot] %s dropped slot %d: %s (%s)", player.Name, slot, part.Name, reason))
+	if player.Parent == Players then sendSnapshot(player) end
+end
+
+local function dropAll(player: Player, reason: string)
+	for slot = 1, Config.LootInventoryCapacity do dropSlot(player, slot, reason) end
 end
 
 local function pickup(player: Player, part: BasePart)
-	local function reject(reason: string)
-		print(string.format("[Loot] Pickup rejected for %s: %s", player.Name, reason))
-	end
+	local function reject(reason: string) print(string.format("[Loot] Pickup rejected for %s: %s", player.Name, reason)) end
 	if roundEnded then reject("round ended"); return end
-	if carried[player] then reject("already carrying one item"); return end
-	if owners[part] or not registered[part] or not CollectionService:HasTag(part, "Loot") or not part:IsDescendantOf(workspace) then
-		reject("item unavailable"); return
-	end
+	local state = ensureInventory(player)
+	local slot = firstEmptySlot(state)
+	if not slot then reject("inventory full"); return end
+	if owners[part] or not registered[part] or not CollectionService:HasTag(part, "Loot")
+		or not part:IsDescendantOf(workspace) then reject("item unavailable"); return end
 	local character = player.Character
 	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
 	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
 	if not humanoid or humanoid.Health <= 0 or not root or not root:IsA("BasePart") then reject("character unavailable"); return end
-	-- Prompt events are input intent: independently validate range and visibility.
 	if (root.Position - part.Position).Magnitude > Config.LootPickupDistance then reject("out of range"); return end
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 	local excluded: {Instance} = {character :: Model}
 	local safeZone = SafeZoneService.Find()
-	if safeZone then
-		table.insert(excluded, safeZone)
-	end
+	if safeZone then table.insert(excluded, safeZone) end
 	rayParams.FilterDescendantsInstances = excluded
 	local hit = workspace:Raycast(root.Position, part.Position - root.Position, rayParams)
 	if hit and hit.Instance ~= part then reject("blocked line of sight"); return end
 	local value = numericAttribute(part, "Value")
-	if not value then reject("invalid Value attribute"); return end
-	local weld = Instance.new("WeldConstraint")
-	weld.Name = "LootCarryWeld"
-	local carry: Carry = {
-		part = part, root = root, humanoid = humanoid, weld = weld,
-		baseSpeed = humanoid.WalkSpeed, canCollide = part.CanCollide, massless = part.Massless,
-		deathConnection = humanoid.Died:Connect(function() drop(player, "death") end),
-	}
-	carried[player] = carry
+	local sizeClass = sizeClassOf(part)
+	if not value or not sizeClass then reject("invalid loot attributes"); return end
+	local folder = inventoryFolder
+	if not folder then reject("inventory storage unavailable"); return end
+	state.slots[slot] = {part = part, originalParent = part.Parent :: Instance, canCollide = part.CanCollide,
+		massless = part.Massless, sizeClass = sizeClass}
+	state.selected = slot
 	owners[part] = player
 	registered[part].prompt.Enabled = false
+	part.Anchored = true
 	part.CanCollide = false
 	part.Massless = true
-	part.Anchored = false
-	part.CFrame = root.CFrame * Config.LootCarryOffset
-	weld.Part0 = root
-	weld.Part1 = part
-	weld.Parent = part
-	applySpeed(carry)
-	print(string.format("[Loot] %s picked up %s: Value=%g Weight=%g WalkSpeed=%.2f", player.Name, part.Name, value, weightOf(part), humanoid.WalkSpeed))
+	part.Parent = folder
+	applyInventorySpeed(player, state)
+	print(string.format("[Loot] %s stored %s [%s] in slot %d; Value=%g; large items=%d; WalkSpeed=%.2f",
+		player.Name, part.Name, sizeClass, slot, value, largeItemCount(state), MovementService.GetWalkSpeed(player)))
 	sendSnapshot(player)
 end
 
@@ -224,96 +233,84 @@ local function unregister(part: BasePart)
 	registered[part] = nil
 	for _, connection in entry.connections do connection:Disconnect() end
 	local owner = owners[part]
-	if owner then drop(owner, "item removed") end
+	if owner then
+		local state = ensureInventory(owner)
+		for slot, item in state.slots do if item.part == part then clearSlot(owner, state, slot); break end end
+		if owner.Parent == Players then sendSnapshot(owner) end
+	end
 	entry.prompt:Destroy()
 end
 
+local function depositSelected(player: Player, state: InventoryState, slot: number)
+	local item = state.slots[slot]
+	if not item then return end
+	local value = numericAttribute(item.part, "Value")
+	if value == nil or not registered[item.part] or not CollectionService:HasTag(item.part, "Loot") then
+		warn("[Quota] Deposit rejected: inventory loot is unavailable or has invalid Value."); return
+	end
+	local name = item.part.Name
+	clearSlot(player, state, slot)
+	unregister(item.part)
+	item.part:Destroy()
+	sendSnapshot(player)
+	print(string.format("[Loot] %s deposited slot %d: %s; WalkSpeed=%.2f", player.Name, slot, name,
+		MovementService.GetWalkSpeed(player)))
+	QuotaService.AddValue(player, value, name)
+end
+
 local function dropOrDeposit(player: Player)
-	local carry = carried[player]
-	if not carry then return end
+	local state = ensureInventory(player)
+	local slot = state.selected
+	if not state.slots[slot] then return end
 	local character = player.Character
-	if roundEnded or not character or carry.root.Parent ~= character or carry.humanoid.Health <= 0 then
-		drop(player, "character unavailable")
-		return
+	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
+	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
+	if roundEnded or not character or not humanoid or humanoid.Health <= 0 or not root or not root:IsA("BasePart") then
+		dropSlot(player, slot, "character unavailable"); return
 	end
 	local zone = SafeZoneService.Find()
-	if not zone then
-		warn("[Quota] Missing Workspace.Submarine.SafeZone; cannot deposit. Dropping loot normally.")
-	end
-	if not zone or not SafeZoneService.IsCharacterInside(character, carry.root, zone) then
-		drop(player, "G requested")
-		return
-	end
-	local part = carry.part
-	local value = numericAttribute(part, "Value")
-	if value == nil or not registered[part] or not CollectionService:HasTag(part, "Loot") or not part:IsDescendantOf(workspace) then
-		warn("[Quota] Deposit rejected: carried loot is unavailable or has an invalid Value.")
-		return
-	end
-	local itemName = part.Name
-	-- No yields: remove carry ownership and the item before banking it. Repeated
-	-- G requests then see empty hands, so this Part can only be credited once.
-	releaseCarry(player)
-	unregister(part)
-	part:Destroy()
-	sendSnapshot(player)
-	print(string.format("[Loot] %s released %s for deposit; WalkSpeed=%.2f", player.Name, itemName, carry.baseSpeed))
-	QuotaService.AddValue(player, value, itemName)
+	if zone and SafeZoneService.IsCharacterInside(character, root, zone) then depositSelected(player, state, slot)
+	else dropSlot(player, slot, "G requested") end
 end
 
 local function register(instance: Instance)
-	if not instance:IsDescendantOf(workspace) then return end
-	if not instance:IsA("BasePart") then
-		warn("[Loot] Loot tag requires a Part: " .. instance:GetFullName())
-		return
-	end
+	if not instance:IsDescendantOf(workspace) or not instance:IsA("BasePart") then return end
 	local part = instance
 	if registered[part] then return end
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "LootPickupPrompt"
-	-- Keep proximity input active without Roblox's floating pickup UI.
 	prompt.Style = Enum.ProximityPromptStyle.Custom
 	prompt.ActionText = "Pick up"
-	prompt.ObjectText = part.Name
 	prompt.KeyboardKeyCode = Config.LootPickupKey
 	prompt.MaxActivationDistance = Config.LootPickupDistance
 	prompt.HoldDuration = Config.LootPromptHoldDuration
-	-- SafeZone is an invisible volume that otherwise occludes prompts. The
-	-- server checks visibility above, excluding only the character and SafeZone.
 	prompt.RequiresLineOfSight = false
 	prompt.Parent = part
 	local function refresh()
-		prompt.ObjectText = string.format("%s | Value %g", part.Name, numericAttribute(part, "Value") or 0)
-		prompt.Enabled = not roundEnded and not owners[part] and part:IsDescendantOf(workspace) and numericAttribute(part, "Value") ~= nil
-		local owner = owners[part]
-		if owner then applySpeed(carried[owner]) end
+		prompt.ObjectText = string.format("%s | %s | Value %g", part.Name, sizeClassOf(part) or "?", numericAttribute(part, "Value") or 0)
+		prompt.Enabled = not roundEnded and not owners[part] and part:IsDescendantOf(workspace)
+			and numericAttribute(part, "Value") ~= nil and sizeClassOf(part) ~= nil
 	end
 	registered[part] = {prompt = prompt, connections = {
 		prompt.Triggered:Connect(function(player: Player) pickup(player, part) end),
 		part:GetAttributeChangedSignal("Value"):Connect(refresh),
-		part:GetAttributeChangedSignal("Weight"):Connect(refresh),
-		part.AncestryChanged:Connect(function()
-			if not part:IsDescendantOf(workspace) and owners[part] then drop(owners[part], "item left Workspace") end
-			refresh()
-		end),
+		part:GetAttributeChangedSignal("SizeClass"):Connect(refresh),
+		part.AncestryChanged:Connect(refresh),
 		part.Destroying:Connect(function() unregister(part) end),
 	}}
 	refresh()
-	if not numericAttribute(part, "Value") then warn("[Loot] Missing/invalid numeric Value: " .. part:GetFullName()) end
-	if part:GetAttribute("Weight") ~= nil and not numericAttribute(part, "Weight") then warn("[Loot] Invalid Weight; using default: " .. part:GetFullName()) end
-	print(string.format("[Loot] Registered %s: Value=%g Weight=%g", part.Name, numericAttribute(part, "Value") or 0, weightOf(part)))
 end
 
 function LootService.EndRound()
 	roundEnded = true
-	for player in carried do
-		local carry = releaseCarry(player)
-		if carry then
-			unregister(carry.part)
-			carry.part:Destroy()
-			print(string.format("[Loot] %s lost unbanked carried loot at run end; WalkSpeed=%.2f", player.Name, carry.baseSpeed))
-			sendSnapshot(player)
+	for player, state in inventories do
+		local lost = 0
+		for slot = 1, Config.LootInventoryCapacity do
+			local item = clearSlot(player, state, slot)
+			if item then unregister(item.part); item.part:Destroy(); lost += 1 end
 		end
+		if lost > 0 then print(string.format("[Loot] %s lost %d unbanked inventory item(s) at run end.", player.Name, lost)) end
+		if player.Parent == Players then sendSnapshot(player) end
 	end
 	for _, entry in registered do entry.prompt.Enabled = false end
 	print("[Loot] Round ended; pickups disabled.")
@@ -322,43 +319,47 @@ end
 function LootService.BeginRound()
 	LootService.EndRound()
 	for _, item in CollectionService:GetTagged("Loot") do
-		if item:IsA("BasePart") and item:IsDescendantOf(workspace) then
-			unregister(item)
-			item:Destroy()
-		end
+		if item:IsA("BasePart") and item:IsDescendantOf(workspace) then unregister(item); item:Destroy() end
 	end
 	roundEnded = false
 	local placed: {Vector3} = {}
 	local spawned = 0
 	for _, template in templates do
 		local part = template.part:Clone()
+		part.Size = part.Size * sizeScale(template.sizeClass)
+		part:SetAttribute("SizeClass", template.sizeClass)
 		if not chooseSpawn(part, placed) then part:Destroy(); continue end
 		table.insert(placed, part.Position)
 		local parent = template.parent
-		if parent ~= workspace and not parent:IsDescendantOf(workspace) then
-			warn("[Loot] Original loot parent missing; respawning in Workspace.")
-			parent = workspace
-		end
+		if parent ~= workspace and not parent:IsDescendantOf(workspace) then parent = workspace end
 		part.Parent = parent
 		CollectionService:AddTag(part, "Loot")
 		register(part)
 		spawned += 1
 	end
-	print(string.format("[Loot] Fresh dive: respawned %d scene loot Parts.", spawned))
+	print(string.format("[Loot] Fresh dive: respawned %d varied-size loot Parts.", spawned))
 end
 
 function LootService.Start()
 	if started then return end
+	assert(Config.LootInventoryCapacity == 4 and #Config.LootSlotKeys == Config.LootInventoryCapacity
+		and #Config.LootSizeClassPattern > 0 and Config.LootSmallScale > 0 and Config.LootMediumScale > 0
+		and Config.LootLargeScale > Config.LootMediumScale and Config.LootLargeSpeedPenaltyPerItem > 0,
+		"Loot inventory and size settings are invalid")
 	started = true
-	-- Capture the hand-built scene before registration adds runtime prompts.
+	local folder = Instance.new("Folder")
+	folder.Name = "PlayerLootInventories"
+	folder.Parent = ServerStorage
+	inventoryFolder = folder
+	local templateIndex = 0
 	for _, item in CollectionService:GetTagged("Loot") do
 		if item:IsA("BasePart") and item:IsDescendantOf(workspace) then
+			templateIndex += 1
 			local copy = item:Clone()
-			if copy then
-				table.insert(templates, {part = copy, parent = item.Parent :: Instance})
-			else
-				warn("[Loot] Cannot capture non-Archivable loot: " .. item:GetFullName())
-			end
+			local patternValue = Config.LootSizeClassPattern[(templateIndex - 1) % #Config.LootSizeClassPattern + 1]
+			local assigned = sizeClassOf(copy)
+			if not assigned and (patternValue == "Small" or patternValue == "Medium" or patternValue == "Large") then assigned = patternValue end
+			if assigned then table.insert(templates, {part = copy, parent = item.Parent :: Instance, sizeClass = assigned}) end
 		end
 	end
 	if #templates == 0 then warn("[Loot] No scene loot templates captured; new dives will have no loot.") end
@@ -366,22 +367,29 @@ function LootService.Start()
 	CollectionService:GetInstanceRemovedSignal("Loot"):Connect(function(instance: Instance)
 		if instance:IsA("BasePart") then unregister(instance) end
 	end)
-	local items = CollectionService:GetTagged("Loot")
-	for _, item in items do register(item) end
-	if #items == 0 then warn("[Loot] No Parts tagged Loot found; tag scene Parts and add numeric Value attributes.") end
+	for _, item in CollectionService:GetTagged("Loot") do register(item) end
+	Players.PlayerAdded:Connect(function(player: Player) ensureInventory(player); sendSnapshot(player) end)
+	Players.PlayerRemoving:Connect(function(player: Player) dropAll(player, "player left"); inventories[player] = nil end)
+	for _, player in Players:GetPlayers() do ensureInventory(player); sendSnapshot(player) end
 	dropRequested.OnServerEvent:Connect(dropOrDeposit)
-	Players.PlayerRemoving:Connect(function(player: Player) drop(player, "player left") end)
+	selectRequested.OnServerEvent:Connect(function(player: Player, slot: any)
+		if typeof(slot) ~= "number" or slot % 1 ~= 0 or slot < 1 or slot > Config.LootInventoryCapacity then return end
+		local state = ensureInventory(player)
+		state.selected = slot
+		sendSnapshot(player)
+	end)
 	local accumulated = 0
 	RunService.Heartbeat:Connect(function(deltaTime: number)
 		accumulated += deltaTime
 		if accumulated < Config.LootUpdateInterval then return end
 		accumulated = 0
-		for player, carry in carried do
-			if player.Character ~= carry.root.Parent or carry.humanoid.Health <= 0 then drop(player, "character removed") end
+		for player, state in inventories do
+			local humanoid = if player.Character then player.Character:FindFirstChildOfClass("Humanoid") else nil
+			if next(state.slots) ~= nil and (not humanoid or humanoid.Health <= 0) then dropAll(player, "character removed") end
 		end
 		for _, player in Players:GetPlayers() do sendSnapshot(player) end
 	end)
-	print("[Loot] Service started. Press E to pick up; G to deposit in sub or drop outside. One item per player.")
+	print("[Loot] Service started. E stores up to four items; 1-4 select; G deposits/drops selected slot.")
 end
 
 return LootService

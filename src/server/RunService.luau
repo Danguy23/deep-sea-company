@@ -4,9 +4,11 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HeartbeatService = game:GetService("RunService")
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+local MovementService = require(script.Parent:WaitForChild("MovementService"))
 local OxygenService = require(script.Parent:WaitForChild("OxygenService"))
 local LootService = require(script.Parent:WaitForChild("LootService"))
 local QuotaService = require(script.Parent:WaitForChild("QuotaService"))
+local ThreatService = require(script.Parent:WaitForChild("ThreatService"))
 
 type Phase = "Lobby" | "Dive" | "Return" | "Payout" | "GameOver"
 
@@ -20,6 +22,7 @@ local function transition(nextPhase: Phase, reason: string)
 	print(string.format("[Run] %s -> %s | %s", phase, nextPhase, reason))
 	phase = nextPhase
 	phaseElapsed = 0
+	if nextPhase ~= "Dive" then ThreatService.Deactivate() end
 end
 
 local function endDive(reason: string)
@@ -54,19 +57,23 @@ end
 local function beginDive(nextQuota: number?)
 	local target = nextQuota or QuotaService.GetSnapshot().quota
 	QuotaService.Reset(target)
+	MovementService.Reset()
 	LootService.BeginRound()
 	OxygenService.Reset()
 	diveNumber += 1
 	transition("Dive", string.format("dive %d; banked 0 / %g; oxygen %g", diveNumber, target, Config.OxygenMax))
 	OxygenService.SetActive(true)
+	ThreatService.Activate()
 end
 
 function RunService.Start()
 	if started then return end
 	started = true
 	QuotaService.Start()
+	MovementService.Start()
 	LootService.Start()
 	OxygenService.Start()
+	ThreatService.Start()
 	QuotaService.QuotaMet:Connect(function() endDive("quota met") end)
 	OxygenService.Depleted:Connect(checkCrew)
 	print(string.format("[Run] Lobby | waiting for a living player; auto-start delay %gs", Config.LobbyDelay))

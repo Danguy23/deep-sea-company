@@ -60,6 +60,21 @@ local function sendSnapshot(player: Player, state: PlayerState, zone: BasePart?)
 	oxygenUpdated:FireClient(player, snapshot)
 end
 
+local function downPlayer(player: Player, state: PlayerState, reason: string): boolean
+	if not active or state.downed then return false end
+	local character = state.character
+	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
+	if not humanoid then return false end
+	state.health = 0
+	state.downed = true
+	state.suffocating = false
+	humanoid.Health = 0
+	print(string.format("[Oxygen] %s DOWNED (%s); oxygen %.1f/%d.", player.Name, reason, state.oxygen, Config.OxygenMax))
+	sendSnapshot(player, state, SafeZoneService.Find())
+	depleted:Fire(player)
+	return true
+end
+
 local function addPlayer(player: Player)
 	if states[player] then
 		return
@@ -126,12 +141,7 @@ local function updatePlayer(player: Player, state: PlayerState, zone: BasePart?,
 			state.logElapsed = 0
 			print(string.format("[Oxygen] %s: %.1f/%d (%s)", player.Name, state.oxygen, Config.OxygenMax, if inSub then "refilling" else "draining"))
 		end
-		if state.health <= 0 then
-			state.downed = true
-			print(string.format("[Oxygen] %s DOWNED at HP 0/%g; oxygen 0/%d.", player.Name, Config.HealthMax, Config.OxygenMax))
-			depleted:Fire(player)
-			humanoid.Health = 0
-		end
+		if state.health <= 0 then downPlayer(player, state, "out of air") end
 	end
 	-- Repeated snapshots let a late-loading HUD recover without client requests.
 	sendSnapshot(player, state, zone)
@@ -162,6 +172,13 @@ function OxygenService.IsDowned(player: Player): boolean
 	local state = states[player]
 	local humanoid = if player.Character then player.Character:FindFirstChildOfClass("Humanoid") else nil
 	return (state ~= nil and state.downed) or (humanoid ~= nil and humanoid.Health <= 0)
+end
+
+-- All hazards use this path so downed state and RunService's crew check stay unified.
+function OxygenService.DownPlayer(player: Player, reason: string): boolean
+	local state = states[player]
+	if not state then return false end
+	return downPlayer(player, state, reason)
 end
 
 function OxygenService.Start()
