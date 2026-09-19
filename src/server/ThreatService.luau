@@ -1,6 +1,7 @@
 --!strict
 
 local Players = game:GetService("Players")
+local PathfindingService = game:GetService("PathfindingService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HeartbeatService = game:GetService("RunService")
 local LightService = require(script.Parent:WaitForChild("LightService"))
@@ -21,10 +22,17 @@ local creature: Model? = nil
 local body: BasePart? = nil
 local highlight: Highlight? = nil
 local target: Player? = nil
-local patrolOrigin = Vector3.zero
 local patrolDestination = Vector3.zero
-local patrolDirection = 1
+local threatBounds: BasePart? = nil
+local currentPath: Path? = nil
+local pathWaypoints = {} :: {PathWaypoint}
+local pathWaypointIndex = 1
+local pathGoal: Vector3? = nil
+local pathAge = 0
+local pathBlocked = false
+local pathBlockedConnection: RBXScriptConnection? = nil
 local updateElapsed = 0
+local updateRunning = false
 local chaseElapsed = 0
 local sprintAfter = 0
 local sprinting = false
@@ -86,15 +94,151 @@ local function createCreature(position: Vector3): (Model, BasePart, Highlight)
 	return model, part, beamHighlight
 end
 
-local function choosePatrolDestination()
+local function findRuinMarker(name: string): BasePart?
+	local ruin = workspace:FindFirstChild("GreyboxRuin")
+	local marker = if ruin then ruin:FindFirstChild(name, true) else nil
+	if marker and marker:IsA("BasePart") then return marker end
+	return nil
+end
+
+local function clampToThreatBounds(destination: Vector3): Vector3
+	local bounds = threatBounds
+	if not bounds then return destination end
+	local halfSize = bounds.Size / 2
+	local localPosition = bounds.CFrame:PointToObjectSpace(destination)
+	local clamped = bounds.CFrame:PointToWorldSpace(Vector3.new(
+		math.clamp(localPosition.X, -halfSize.X, halfSize.X),
+		0,
+		math.clamp(localPosition.Z, -halfSize.Z, halfSize.Z)
+	))
+	return Vector3.new(clamped.X, destination.Y, clamped.Z)
+end
+
+local function planarDistance(first: Vector3, second: Vector3): number
+	return (Vector3.new(first.X, 0, first.Z) - Vector3.new(second.X, 0, second.Z)).Magnitude
+end
+
+local function clearNavigation()
+	if pathBlockedConnection then pathBlockedConnection:Disconnect() end
+	pathBlockedConnection = nil
+	currentPath = nil
+	pathWaypoints = {}
+	pathWaypointIndex = 1
+	pathGoal = nil
+	pathAge = 0
+	pathBlocked = false
+end
+
+local function computePath(startPosition: Vector3, finishPosition: Vector3): (Path?, {PathWaypoint}?)
+	local path = PathfindingService:CreatePath({
+		AgentRadius = settings.PathAgentRadius,
+		AgentHeight = settings.PathAgentHeight,
+		AgentCanJump = false,
+		AgentCanClimb = false,
+		WaypointSpacing = settings.PathWaypointSpacing,
+	})
+	local success, message = pcall(function()
+		path:ComputeAsync(startPosition, finishPosition)
+	end)
+	if not success then
+		warn("[Threat] Path computation failed: " .. tostring(message))
+		return nil, nil
+	end
+	if path.Status ~= Enum.PathStatus.Success then return nil, nil end
+	local waypoints = path:GetWaypoints()
+	if #waypoints == 0 then return nil, nil end
+	return path, waypoints
+end
+
+local function usePath(path: Path, waypoints: {PathWaypoint}, goal: Vector3, startPosition: Vector3)
+	clearNavigation()
+	currentPath = path
+	pathWaypoints = waypoints
+	pathGoal = goal
+	while pathWaypointIndex <= #pathWaypoints
+		and planarDistance(pathWaypoints[pathWaypointIndex].Position, startPosition)
+			<= settings.PathWaypointReachedDistance do
+		pathWaypointIndex += 1
+	end
+	pathBlockedConnection = path.Blocked:Connect(function(blockedIndex: number)
+		if currentPath == path and blockedIndex >= pathWaypointIndex then pathBlocked = true end
+	end)
+end
+
+local function makeGroundRayParams(): RaycastParams?
+	local ruin = workspace:FindFirstChild("GreyboxRuin")
+	local floors = if ruin then ruin:FindFirstChild("Floors") else nil
+	local submarine = workspace:FindFirstChild("Submarine")
+	local submarineFloor = if submarine then submarine:FindFirstChild("Floor") else nil
+	if not floors or not submarineFloor or not submarineFloor:IsA("BasePart") then return nil end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = {floors, submarineFloor}
+	params.RespectCanCollide = true
+	return params
+end
+
+local function makeClearanceParams(bounds: BasePart, zone: BasePart): OverlapParams
+	local excluded: {Instance} = {bounds, zone}
+	if bounds.Parent then table.insert(excluded, bounds.Parent) end
+	if creature then table.insert(excluded, creature :: Model) end
+	for _, player in Players:GetPlayers() do
+		if player.Character then table.insert(excluded, player.Character) end
+	end
+	local params = OverlapParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = excluded
+	params.RespectCanCollide = true
+	return params
+end
+
+local function randomGroundPosition(bounds: BasePart, zone: BasePart, minimumDistance: number): Vector3?
+	local groundParams = makeGroundRayParams()
+	if not groundParams then return nil end
+	local clearanceParams = makeClearanceParams(bounds, zone)
+	local halfSize = bounds.Size / 2
+	local point = bounds.CFrame:PointToWorldSpace(Vector3.new(
+		random:NextNumber(-halfSize.X, halfSize.X),
+		0,
+		random:NextNumber(-halfSize.Z, halfSize.Z)
+	))
+	if planarDistance(point, zone.Position) < minimumDistance then return nil end
+	local rayOrigin = Vector3.new(point.X, bounds.Position.Y + settings.SpawnRayHeight, point.Z)
+	local ground = workspace:Raycast(rayOrigin, -Vector3.yAxis * settings.SpawnRayHeight * 2, groundParams)
+	if not ground or ground.Normal.Y < settings.SpawnMinimumGroundNormalY then return nil end
+	local position = ground.Position + Vector3.yAxis * (settings.BodySize.Y / 2 + settings.SpawnGroundClearance)
+	if #workspace:GetPartBoundsInBox(CFrame.new(position), settings.BodySize, clearanceParams) > 0 then return nil end
+	return position
+end
+
+local function chooseSpawnPosition(bounds: BasePart, zone: BasePart): (Vector3?, number)
+	for attempt = 1, settings.SpawnAttempts do
+		local candidate = randomGroundPosition(bounds, zone, settings.SpawnMinimumDistance)
+		if not candidate then continue end
+		local path = computePath(candidate, zone.Position)
+		if path then return candidate, attempt end
+	end
+	return nil, settings.SpawnAttempts
+end
+
+local function choosePatrolDestination(): boolean
 	local part = body
-	local offset = if part then part.Position - patrolOrigin else Vector3.zero
-	local planarOffset = Vector3.new(offset.X, 0, offset.Z)
-	local angle = if planarOffset.Magnitude > 0.001
-		then math.atan2(planarOffset.Z, planarOffset.X) + settings.PatrolArcAngle * patrolDirection
-		else random:NextNumber(0, math.pi * 2)
-	local distance = random:NextNumber(settings.PatrolMinimumRadius, settings.PatrolRadius)
-	patrolDestination = patrolOrigin + Vector3.new(math.cos(angle) * distance, 0, math.sin(angle) * distance)
+	local bounds = threatBounds
+	local zone = SafeZoneService.Find()
+	if not part or not bounds or not zone then return false end
+	for _ = 1, settings.SpawnAttempts do
+		local candidate = randomGroundPosition(bounds, zone, 0)
+		if not candidate then continue end
+		local path, waypoints = computePath(part.Position, candidate)
+		if path and waypoints then
+			patrolDestination = candidate
+			usePath(path, waypoints, candidate, part.Position)
+			return true
+		end
+	end
+	clearNavigation()
+	warn("[Threat] Could not find a reachable patrol destination inside ThreatBounds.")
+	return false
 end
 
 local function updateVisibility(part: BasePart)
@@ -141,14 +285,48 @@ local function nearestDetectable(from: Vector3): (Player?, number, boolean)
 	return nearest, nearestDistance, nearestLit
 end
 
-local function moveToward(model: Model, part: BasePart, destination: Vector3, speed: number, elapsed: number): boolean
-	local offset = destination - part.Position
-	local distance = offset.Magnitude
-	if distance <= settings.PatrolArrivalDistance then return true end
-	local direction = offset.Unit
-	local nextPosition = part.Position + direction * math.min(speed * elapsed, distance)
-	model:PivotTo(CFrame.lookAt(nextPosition, nextPosition + direction))
-	return false
+local function refreshPath(part: BasePart, destination: Vector3): boolean
+	local path, waypoints = computePath(part.Position, destination)
+	if not path or not waypoints then return false end
+	usePath(path, waypoints, destination, part.Position)
+	return true
+end
+
+local function moveAlongPath(model: Model, part: BasePart, destination: Vector3, speed: number, elapsed: number): (boolean, boolean)
+	destination = clampToThreatBounds(destination)
+	pathAge += elapsed
+	local goalMoved = if pathGoal then planarDistance(pathGoal, destination) else math.huge
+	local needsPath = not currentPath or pathBlocked or pathAge >= settings.PathRecomputeInterval
+		or goalMoved >= settings.PathGoalMoveThreshold
+	if needsPath and not refreshPath(part, destination) then
+		pathAge = 0
+		if not currentPath or pathBlocked then clearNavigation() end
+		return false, currentPath ~= nil
+	end
+
+	while pathWaypointIndex <= #pathWaypoints do
+		local waypoint = pathWaypoints[pathWaypointIndex]
+		local waypointPosition = Vector3.new(waypoint.Position.X, part.Position.Y, waypoint.Position.Z)
+		local distance = (waypointPosition - part.Position).Magnitude
+		if distance > settings.PathWaypointReachedDistance then
+			local direction = (waypointPosition - part.Position).Unit
+			local nextPosition = part.Position + direction * math.min(speed * elapsed, distance)
+			model:PivotTo(CFrame.lookAt(nextPosition, nextPosition + direction))
+			return false, true
+		end
+		pathWaypointIndex += 1
+	end
+	return planarDistance(part.Position, destination) <= settings.PatrolArrivalDistance, true
+end
+
+local function hasClearAttackLine(model: Model, player: Player, from: Vector3, destination: Vector3): boolean
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	local excluded: {Instance} = {model}
+	if player.Character then table.insert(excluded, player.Character) end
+	params.FilterDescendantsInstances = excluded
+	params.RespectCanCollide = true
+	return workspace:Raycast(from, destination - from, params) == nil
 end
 
 local function update(elapsed: number)
@@ -164,6 +342,7 @@ local function update(elapsed: number)
 				if sprinting then "sprint" else "chase"))
 		end
 		target = detected
+		clearNavigation()
 		if detected then
 			mode = "Chase"
 			chaseElapsed = 0
@@ -199,8 +378,10 @@ local function update(elapsed: number)
 			print(string.format("[Threat] Chase -> sprint | target %s; speed %g", chasedPlayer.Name, settings.SprintSpeed))
 		end
 		local speed = if sprinting then settings.SprintSpeed else settings.ChaseSpeed
-		local reached = moveToward(model, part, root.Position, speed, elapsed)
-		if reached or (root.Position - part.Position).Magnitude <= settings.AttackDistance then
+		local _, hasPath = moveAlongPath(model, part, root.Position, speed, elapsed)
+		local attackDistance = (root.Position - part.Position).Magnitude
+		if hasPath and attackDistance <= settings.AttackDistance
+			and hasClearAttackLine(model, chasedPlayer, part.Position, root.Position) then
 			target = nil
 			mode = "Idle"
 			chaseElapsed = 0
@@ -210,8 +391,9 @@ local function update(elapsed: number)
 			end
 			if active then choosePatrolDestination() end
 		end
-	elseif moveToward(model, part, patrolDestination, settings.MoveSpeed, elapsed) then
-		choosePatrolDestination()
+	else
+		local reached, hasPath = moveAlongPath(model, part, patrolDestination, settings.MoveSpeed, elapsed)
+		if reached or not hasPath then choosePatrolDestination() end
 	end
 end
 
@@ -222,22 +404,30 @@ function ThreatService.Activate()
 		warn("[Threat] MISSING Workspace.Submarine.SafeZone; creature cannot spawn for this Dive.")
 		return
 	end
-	local forward = Vector3.new(zone.CFrame.LookVector.X, 0, zone.CFrame.LookVector.Z)
-	if forward.Magnitude < 0.001 then forward = Vector3.zAxis end
-	local spawnPosition = zone.Position + forward.Unit * settings.SpawnDistance + Vector3.yAxis * settings.HoverHeight
+	local bounds = findRuinMarker("ThreatBounds")
+	if not bounds then
+		warn("[Threat] MISSING Workspace.GreyboxRuin ThreatBounds Part; creature cannot spawn outside authored ruin bounds.")
+		return
+	end
+	threatBounds = bounds
+	local spawnPosition, spawnAttempt = chooseSpawnPosition(bounds, zone)
+	if not spawnPosition then
+		threatBounds = nil
+		warn(string.format("[Threat] No valid spawn after %d attempts; check ThreatBounds, map collision, or SpawnMinimumDistance.", spawnAttempt))
+		return
+	end
 	local model, part, beamHighlight = createCreature(spawnPosition)
 	creature = model
 	body = part
 	highlight = beamHighlight
-	patrolOrigin = zone.Position + Vector3.yAxis * settings.HoverHeight
-	patrolDirection = if random:NextInteger(0, 1) == 0 then -1 else 1
 	choosePatrolDestination()
 	target = nil
 	mode = "Idle"
 	chaseElapsed = 0
 	sprinting = false
 	active = true
-	print(string.format("[Threat] Inactive -> idle | spawned %.1f studs from SafeZone", settings.SpawnDistance))
+	print(string.format("[Threat] Inactive -> idle | spawned %.1f studs from SafeZone at (%.1f, %.1f), attempt %d",
+		planarDistance(spawnPosition, zone.Position), spawnPosition.X, spawnPosition.Z, spawnAttempt))
 end
 
 function ThreatService.Deactivate()
@@ -254,6 +444,8 @@ function ThreatService.Deactivate()
 	creature = nil
 	body = nil
 	highlight = nil
+	clearNavigation()
+	threatBounds = nil
 end
 
 function ThreatService.Start()
@@ -270,27 +462,34 @@ function ThreatService.Start()
 		and settings.SprintDelayMaximum >= settings.SprintDelayMinimum
 		and isFinitePositive(settings.AttackDistance)
 		and isFinitePositive(settings.UpdateInterval)
-		and isFinitePositive(settings.SpawnDistance)
-		and isFinitePositive(settings.PatrolMinimumRadius)
-		and isFinitePositive(settings.PatrolRadius)
-		and settings.PatrolMinimumRadius < settings.PatrolRadius
-		and isFinitePositive(settings.PatrolArcAngle)
-		and settings.PatrolArcAngle < math.pi
+		and isFinitePositive(settings.SpawnMinimumDistance)
+		and settings.SpawnAttempts > 0 and settings.SpawnAttempts % 1 == 0
+		and isFinitePositive(settings.SpawnRayHeight)
+		and isFinitePositive(settings.SpawnGroundClearance)
+		and settings.SpawnMinimumGroundNormalY > 0 and settings.SpawnMinimumGroundNormalY <= 1
+		and settings.PathAgentRadius > 0 and settings.PathAgentRadius % 1 == 0
+		and settings.PathAgentHeight > 0 and settings.PathAgentHeight % 1 == 0
+		and isFinitePositive(settings.PathWaypointSpacing)
+		and isFinitePositive(settings.PathRecomputeInterval)
+		and isFinitePositive(settings.PathGoalMoveThreshold)
+		and isFinitePositive(settings.PathWaypointReachedDistance)
 		and isFinitePositive(settings.PatrolArrivalDistance),
-		"Config.Threat needs positive finite values, ordered detection radii, and an ordered patrol band")
+		"Config.Threat needs valid spawn, pathfinding, movement, and detection settings")
 	started = true
 	HeartbeatService.Heartbeat:Connect(function(deltaTime: number)
-		if not active then return end
+		if not active or updateRunning then return end
 		updateElapsed += deltaTime
 		if updateElapsed < settings.UpdateInterval then return end
 		local elapsed = updateElapsed
 		updateElapsed = 0
-		update(elapsed)
+		updateRunning = true
+		local success, message = pcall(update, elapsed)
+		updateRunning = false
+		if not success then warn("[Threat] Update failed: " .. tostring(message)) end
 	end)
-	print(string.format("[Threat] Service ready: dark radius %g, lit radius %g, patrol %g-%g studs from SafeZone at %g/s, chase %g/s, sprint %g/s after %g-%gs.",
-		settings.DarkDetectionRadius, settings.LitDetectionRadius, settings.PatrolMinimumRadius,
-		settings.PatrolRadius, settings.MoveSpeed, settings.ChaseSpeed, settings.SprintSpeed,
-		settings.SprintDelayMinimum, settings.SprintDelayMaximum))
+	print(string.format("[Threat] Service ready: spawn >=%g studs from SafeZone, path agent %gx%g, patrol %g/s, chase %g/s, sprint %g/s.",
+		settings.SpawnMinimumDistance, settings.PathAgentRadius * 2, settings.PathAgentHeight,
+		settings.MoveSpeed, settings.ChaseSpeed, settings.SprintSpeed))
 end
 
 return ThreatService
