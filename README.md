@@ -61,9 +61,9 @@ Restore the expected scene name before continuing.
 ## Configuration
 
 All tunables live in `src/shared/Config.luau`. Important threat controls are
-`SightRange` and `FieldOfViewAngle`. Loot Parts with a `SpawnRadiusFraction`
-attribute spawn at that fraction of `LootSpawnRadius`; Parts without it retain
-their authored positions.
+`SightRange` and `FieldOfViewAngle`. Loot placement samples random ground points
+throughout `GreyboxRuin.ThreatBounds`; padding, SafeZone distance, attempts, and
+minimum separation are configurable.
 
 All persistent game logic lives under `src/`. Studio or MCP should only be used
 for the physical scene and playtesting.

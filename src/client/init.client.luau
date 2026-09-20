@@ -1,6 +1,7 @@
 --!strict
 
 local Players = game:GetService("Players")
+local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -136,9 +137,94 @@ for index = 1, Config.LootInventoryCapacity do
 	table.insert(slotStrokes, stroke)
 end
 
+local inventoryFull = false
+local activeLootHighlights: {[BasePart]: Highlight} = {}
+local lootHighlightPool: {Highlight} = {}
+local lootHighlightElapsed = 0
+local lootHighlightFolder = Instance.new("Folder")
+lootHighlightFolder.Name = "LootHighlights"
+lootHighlightFolder.Parent = workspace
+
+local function lootPrompt(part: BasePart): ProximityPrompt?
+	local prompt = part:FindFirstChild("LootPickupPrompt")
+	return if prompt and prompt:IsA("ProximityPrompt") then prompt else nil
+end
+
+local function refreshLootPrompt(part: BasePart)
+	local prompt = lootPrompt(part)
+	if prompt then prompt.ActionText = if inventoryFull then "Inventory full" else "Pick up" end
+end
+
+local function showLootHighlight(part: BasePart)
+	if activeLootHighlights[part] then return end
+	local highlight = table.remove(lootHighlightPool)
+	if not highlight then
+		highlight = Instance.new("Highlight")
+		highlight.Name = "LootOutline"
+		highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		highlight.FillTransparency = 1
+		highlight.Parent = lootHighlightFolder
+	end
+	highlight.OutlineColor = Config.LootHighlightColor
+	highlight.OutlineTransparency = Config.LootHighlightOutlineTransparency
+	highlight.Adornee = part
+	highlight.Enabled = true
+	activeLootHighlights[part] = highlight
+end
+
+local function hideLootHighlight(part: BasePart, highlight: Highlight)
+	activeLootHighlights[part] = nil
+	highlight.Enabled = false
+	highlight.Adornee = nil
+	table.insert(lootHighlightPool, highlight)
+end
+
+local function lootIsVisible(camera: Camera, part: BasePart, rayParams: RaycastParams): boolean
+	local offset = part.Position - camera.CFrame.Position
+	if offset.Magnitude > Config.LootHighlightDistance then return false end
+	local _, onScreen = camera:WorldToViewportPoint(part.Position)
+	if not onScreen then return false end
+	local hit = workspace:Raycast(camera.CFrame.Position, offset, rayParams)
+	return hit == nil or hit.Instance == part
+end
+
+local function updateLootFeedback()
+	local camera = workspace.CurrentCamera
+	local visible: {[BasePart]: boolean} = {}
+	if camera then
+		local rayParams = RaycastParams.new()
+		rayParams.FilterType = Enum.RaycastFilterType.Exclude
+		local excluded: {Instance} = {}
+		if localPlayer.Character then table.insert(excluded, localPlayer.Character) end
+		local submarine = workspace:FindFirstChild("Submarine")
+		local safeZone = if submarine then submarine:FindFirstChild("SafeZone") else nil
+		if safeZone then table.insert(excluded, safeZone) end
+		local ruin = workspace:FindFirstChild("GreyboxRuin")
+		local threatBounds = if ruin then ruin:FindFirstChild("ThreatBounds", true) else nil
+		if threatBounds then table.insert(excluded, threatBounds) end
+		rayParams.FilterDescendantsInstances = excluded
+		rayParams.IgnoreWater = true
+		for _, instance in CollectionService:GetTagged("Loot") do
+			if not instance:IsA("BasePart") or not instance:IsDescendantOf(workspace) then continue end
+			local part = instance
+			refreshLootPrompt(part)
+			local prompt = lootPrompt(part)
+			if prompt and prompt.Enabled and lootIsVisible(camera, part, rayParams) then
+				visible[part] = true
+				showLootHighlight(part)
+			end
+		end
+	end
+	for part, highlight in activeLootHighlights do
+		if not visible[part] then hideLootHighlight(part, highlight) end
+	end
+end
+
 lootUpdated.OnClientEvent:Connect(function(snapshot: LootTypes.Snapshot)
+	local occupiedSlots = 0
 	for index = 1, snapshot.capacity do
 		local slot = snapshot.slots[index]
+		if slot and slot.occupied then occupiedSlots += 1 end
 		slotLabels[index].Text = if slot and slot.occupied
 			then string.format("%d | %s\n%s\n$%g", index, slot.sizeClass, slot.name, slot.value)
 			else string.format("%d\nEMPTY", index)
@@ -146,6 +232,17 @@ lootUpdated.OnClientEvent:Connect(function(snapshot: LootTypes.Snapshot)
 			else Color3.fromRGB(80, 105, 110)
 		slotStrokes[index].Thickness = if index == snapshot.selected then 4 else 2
 	end
+	inventoryFull = occupiedSlots >= snapshot.capacity
+	for _, instance in CollectionService:GetTagged("Loot") do
+		if instance:IsA("BasePart") then refreshLootPrompt(instance) end
+	end
+end)
+
+RunService.Heartbeat:Connect(function(deltaTime: number)
+	lootHighlightElapsed += deltaTime
+	if lootHighlightElapsed < Config.LootHighlightUpdateInterval then return end
+	lootHighlightElapsed = 0
+	updateLootFeedback()
 end)
 
 movementUpdated.OnClientEvent:Connect(function(snapshot: MovementTypes.Snapshot)

@@ -51,6 +51,11 @@ local function sizeScale(sizeClass: SizeClass): number
 	return Config.LootMediumScale
 end
 
+local function physicalSize(authoredSize: Vector3, sizeClass: SizeClass): Vector3
+	local longestDimension = math.max(authoredSize.X, authoredSize.Y, authoredSize.Z)
+	return authoredSize / longestDimension * Config.LootBaseSize * sizeScale(sizeClass)
+end
+
 local function ensureInventory(player: Player): InventoryState
 	local state = inventories[player]
 	if state then return state end
@@ -92,33 +97,47 @@ local function firstEmptySlot(state: InventoryState): number?
 end
 
 local function chooseSpawn(part: BasePart, placed: {Vector3}): boolean
-	local fraction = numericAttribute(part, "SpawnRadiusFraction")
-	if not fraction then return true end
 	local zone = SafeZoneService.Find()
 	if not zone then warn("[Loot] Missing SafeZone; keeping authored loot positions."); return true end
-	local offset = part.Position - zone.Position
-	local authoredAngle = math.atan2(offset.Z, offset.X)
-	local excluded: {Instance} = {zone}
+	local ruin = workspace:FindFirstChild("GreyboxRuin")
+	local boundsInstance = if ruin then ruin:FindFirstChild("ThreatBounds", true) else nil
+	if not boundsInstance or not boundsInstance:IsA("BasePart") then
+		warn("[Loot] Missing Workspace.GreyboxRuin ThreatBounds Part; keeping authored loot positions.")
+		return true
+	end
+	local floors = if ruin then ruin:FindFirstChild("Floors") else nil
+	if not floors then
+		warn("[Loot] Missing Workspace.GreyboxRuin.Floors; keeping authored loot positions.")
+		return true
+	end
+	local bounds = boundsInstance
+	local excluded: {Instance} = {zone, bounds}
 	for _, player in Players:GetPlayers() do if player.Character then table.insert(excluded, player.Character) end end
 	local rayParams = RaycastParams.new()
-	rayParams.FilterType = Enum.RaycastFilterType.Exclude
-	rayParams.FilterDescendantsInstances = excluded
+	rayParams.FilterType = Enum.RaycastFilterType.Include
+	rayParams.FilterDescendantsInstances = {floors}
 	rayParams.RespectCanCollide = true
 	local overlap = OverlapParams.new()
 	overlap.FilterType = Enum.RaycastFilterType.Exclude
 	overlap.FilterDescendantsInstances = excluded
 	overlap.RespectCanCollide = true
-	local halfSize = zone.Size / 2
+	local halfSize = bounds.Size / 2
+	local usableX = halfSize.X - Config.LootSpawnBoundsPadding
+	local usableZ = halfSize.Z - Config.LootSpawnBoundsPadding
+	if usableX <= 0 or usableZ <= 0 then
+		warn("[Loot] ThreatBounds is too small for LootSpawnBoundsPadding; keeping authored loot positions.")
+		return true
+	end
 	for _ = 1, Config.LootSpawnAttempts do
-		local angle = authoredAngle + random:NextNumber(-Config.LootSpawnAngleJitter, Config.LootSpawnAngleJitter)
-		local direction = Vector3.new(math.cos(angle), 0, math.sin(angle))
-		local localDirection = zone.CFrame:VectorToObjectSpace(direction)
-		local edgeDistance = math.min(halfSize.X / math.max(math.abs(localDirection.X), 0.0001),
-			halfSize.Z / math.max(math.abs(localDirection.Z), 0.0001))
-		local distance = math.clamp(Config.LootSpawnRadius * (fraction
-			+ random:NextNumber(-Config.LootSpawnRadiusJitter, Config.LootSpawnRadiusJitter)), 0, Config.LootSpawnRadius)
-		local point = zone.Position + direction * (edgeDistance + distance)
-		local ground = workspace:Raycast(point + Vector3.yAxis * Config.LootSpawnRayHeight,
+		local point = bounds.CFrame:PointToWorldSpace(Vector3.new(
+			random:NextNumber(-usableX, usableX),
+			0,
+			random:NextNumber(-usableZ, usableZ)
+		))
+		local safeZoneOffset = Vector3.new(point.X - zone.Position.X, 0, point.Z - zone.Position.Z)
+		if safeZoneOffset.Magnitude < Config.LootSpawnMinimumSafeZoneDistance then continue end
+		local rayOrigin = Vector3.new(point.X, bounds.Position.Y + Config.LootSpawnRayHeight, point.Z)
+		local ground = workspace:Raycast(rayOrigin,
 			-Vector3.yAxis * Config.LootSpawnRayHeight * 2, rayParams)
 		if not ground or ground.Normal.Y < Config.LootSpawnMinGroundNormalY then continue end
 		local position = ground.Position + Vector3.yAxis * (part.Size.Y / 2 + Config.LootSpawnClearance)
@@ -129,14 +148,13 @@ local function chooseSpawn(part: BasePart, placed: {Vector3}): boolean
 			if (other - position).Magnitude < math.max(Config.LootSpawnMinSeparation, part.Size.Magnitude) then separated = false; break end
 		end
 		if not separated then continue end
-		local sightEnd = Vector3.new(position.X, zone.Position.Y, position.Z)
-		if workspace:Raycast(zone.Position, sightEnd - zone.Position, rayParams) then continue end
 		part.CFrame = spawnCFrame
 		part.Anchored = true
-		print(string.format("[Loot] Spawn %s [%s]: %.1f studs outside sub.", part.Name, sizeClassOf(part) or "Medium", distance))
+		print(string.format("[Loot] Spawn %s [%s]: (%.1f, %.1f), %.1f studs from sub.",
+			part.Name, sizeClassOf(part) or "Medium", position.X, position.Z, safeZoneOffset.Magnitude))
 		return true
 	end
-	warn("[Loot] No clear, reachable spawn for " .. part.Name .. "; check scene geometry / SpawnRadiusFraction.")
+	warn("[Loot] No clear spawn across ThreatBounds for " .. part.Name .. "; check bounds, ground, and clearance.")
 	return false
 end
 
@@ -282,12 +300,12 @@ local function register(instance: Instance)
 	if registered[part] then return end
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "LootPickupPrompt"
-	prompt.Style = Enum.ProximityPromptStyle.Custom
+	prompt.Style = Enum.ProximityPromptStyle.Default
 	prompt.ActionText = "Pick up"
 	prompt.KeyboardKeyCode = Config.LootPickupKey
 	prompt.MaxActivationDistance = Config.LootPickupDistance
 	prompt.HoldDuration = Config.LootPromptHoldDuration
-	prompt.RequiresLineOfSight = false
+	prompt.RequiresLineOfSight = true
 	prompt.Parent = part
 	local function refresh()
 		prompt.ObjectText = string.format("%s | %s | Value %g", part.Name, sizeClassOf(part) or "?", numericAttribute(part, "Value") or 0)
@@ -329,7 +347,7 @@ function LootService.BeginRound()
 	local spawned = 0
 	for _, template in templates do
 		local part = template.part:Clone()
-		part.Size = part.Size * sizeScale(template.sizeClass)
+		part.Size = physicalSize(part.Size, template.sizeClass)
 		part:SetAttribute("SizeClass", template.sizeClass)
 		if not chooseSpawn(part, placed) then part:Destroy(); continue end
 		table.insert(placed, part.Position)
@@ -346,10 +364,15 @@ end
 function LootService.Start()
 	if started then return end
 	assert(Config.LootInventoryCapacity == 4 and #Config.LootSlotKeys == Config.LootInventoryCapacity
-		and #Config.LootSizeClassPattern > 0 and Config.LootSmallScale > 0 and Config.LootMediumScale > 0
-		and Config.LootLargeScale > Config.LootMediumScale and Config.LootLargeSpeedPenaltyPerItem > 0
-		and Config.LootSpawnRadius > 0,
-		"Loot inventory and size settings are invalid")
+		and Config.LootHighlightDistance > Config.LootPickupDistance and Config.LootHighlightUpdateInterval > 0
+		and Config.LootHighlightOutlineTransparency >= 0 and Config.LootHighlightOutlineTransparency <= 1
+		and #Config.LootSizeClassPattern > 0 and Config.LootBaseSize > 0
+		and Config.LootSmallScale > 0 and Config.LootSmallScale < Config.LootMediumScale
+		and Config.LootMediumScale > 0 and Config.LootLargeScale > Config.LootMediumScale
+		and Config.LootLargeSpeedPenaltyPerItem > 0
+		and Config.LootSpawnAttempts > 0 and Config.LootSpawnAttempts % 1 == 0
+		and Config.LootSpawnBoundsPadding >= 0 and Config.LootSpawnMinimumSafeZoneDistance >= 0,
+		"Loot inventory, feedback, size, or spawn settings are invalid")
 	started = true
 	local folder = Instance.new("Folder")
 	folder.Name = "PlayerLootInventories"
