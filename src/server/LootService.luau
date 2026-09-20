@@ -96,13 +96,6 @@ local function chooseSpawn(part: BasePart, placed: {Vector3}): boolean
 	if not fraction then return true end
 	local zone = SafeZoneService.Find()
 	if not zone then warn("[Loot] Missing SafeZone; keeping authored loot positions."); return true end
-	local largePenalty = if sizeClassOf(part) == "Large" then Config.LootLargeSpeedPenaltyPerItem else 0
-	local haulSpeed = Config.Movement.WalkSpeed * (1 - largePenalty)
-	local secondsPerStud = 1 / Config.Movement.WalkSpeed + 1 / haulSpeed
-	local airSeconds = Config.OxygenMax / Config.OxygenDrainPerSecond
-	local safeDistance = (airSeconds - Config.LootSpawnInteractionSeconds) / secondsPerStud
-	local maxDistance = (airSeconds + Config.DrowningSeconds - Config.LootSpawnInteractionSeconds
-		- Config.LootSpawnSurvivalMarginSeconds) / secondsPerStud
 	local offset = part.Position - zone.Position
 	local authoredAngle = math.atan2(offset.Z, offset.X)
 	local excluded: {Instance} = {zone}
@@ -122,8 +115,8 @@ local function chooseSpawn(part: BasePart, placed: {Vector3}): boolean
 		local localDirection = zone.CFrame:VectorToObjectSpace(direction)
 		local edgeDistance = math.min(halfSize.X / math.max(math.abs(localDirection.X), 0.0001),
 			halfSize.Z / math.max(math.abs(localDirection.Z), 0.0001))
-		local distance = math.clamp(safeDistance * (fraction
-			+ random:NextNumber(-Config.LootSpawnRadiusJitter, Config.LootSpawnRadiusJitter)), 0, maxDistance)
+		local distance = math.clamp(Config.LootSpawnRadius * (fraction
+			+ random:NextNumber(-Config.LootSpawnRadiusJitter, Config.LootSpawnRadiusJitter)), 0, Config.LootSpawnRadius)
 		local point = zone.Position + direction * (edgeDistance + distance)
 		local ground = workspace:Raycast(point + Vector3.yAxis * Config.LootSpawnRayHeight,
 			-Vector3.yAxis * Config.LootSpawnRayHeight * 2, rayParams)
@@ -354,7 +347,8 @@ function LootService.Start()
 	if started then return end
 	assert(Config.LootInventoryCapacity == 4 and #Config.LootSlotKeys == Config.LootInventoryCapacity
 		and #Config.LootSizeClassPattern > 0 and Config.LootSmallScale > 0 and Config.LootMediumScale > 0
-		and Config.LootLargeScale > Config.LootMediumScale and Config.LootLargeSpeedPenaltyPerItem > 0,
+		and Config.LootLargeScale > Config.LootMediumScale and Config.LootLargeSpeedPenaltyPerItem > 0
+		and Config.LootSpawnRadius > 0,
 		"Loot inventory and size settings are invalid")
 	started = true
 	local folder = Instance.new("Folder")

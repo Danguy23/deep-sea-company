@@ -3,33 +3,47 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HeartbeatService = game:GetService("RunService")
-local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Config = require(Shared:WaitForChild("Config"))
+local RunTypes = require(Shared:WaitForChild("RunTypes"))
+local runUpdated = Shared:WaitForChild("Remotes"):WaitForChild("RunUpdated") :: RemoteEvent
 local MovementService = require(script.Parent:WaitForChild("MovementService"))
-local OxygenService = require(script.Parent:WaitForChild("OxygenService"))
+local DownService = require(script.Parent:WaitForChild("DownService"))
 local LootService = require(script.Parent:WaitForChild("LootService"))
 local QuotaService = require(script.Parent:WaitForChild("QuotaService"))
+local SafeZoneService = require(script.Parent:WaitForChild("SafeZoneService"))
 local ThreatService = require(script.Parent:WaitForChild("ThreatService"))
 
-type Phase = "Lobby" | "Dive" | "Return" | "Payout" | "GameOver"
+type Phase = RunTypes.Phase
 
 local RunService = {}
 local phase: Phase = "Lobby"
 local started = false
 local phaseElapsed = 0
+local runUpdateElapsed = 0
 local diveNumber = 0
+
+local function runSnapshot(): RunTypes.Snapshot
+	local safeZone = SafeZoneService.Find()
+	return {
+		phase = phase,
+		safeZonePosition = if safeZone then safeZone.Position else nil,
+	}
+end
 
 local function transition(nextPhase: Phase, reason: string)
 	print(string.format("[Run] %s -> %s | %s", phase, nextPhase, reason))
 	phase = nextPhase
 	phaseElapsed = 0
 	if nextPhase ~= "Dive" then ThreatService.Deactivate() end
+	runUpdated:FireAllClients(runSnapshot())
 end
 
 local function endDive(reason: string)
 	if phase ~= "Dive" then return end
 	-- Set the phase first: duplicate signals cannot resolve the same dive twice.
 	transition("Return", reason)
-	OxygenService.SetActive(false)
+	DownService.SetActive(false)
 	LootService.EndRound()
 end
 
@@ -37,9 +51,9 @@ local function checkCrew()
 	if phase ~= "Dive" then return end
 	local crew = Players:GetPlayers()
 	for _, player in crew do
-		if not OxygenService.IsDowned(player) then return end
+		if not DownService.IsDowned(player) then return end
 	end
-	endDive(if #crew == 0 then "crew left" else "all players downed/out of air")
+	endDive(if #crew == 0 then "crew left" else "all players downed")
 end
 
 local function crewReady(): boolean
@@ -59,10 +73,10 @@ local function beginDive(nextQuota: number?)
 	QuotaService.Reset(target)
 	MovementService.Reset()
 	LootService.BeginRound()
-	OxygenService.Reset()
+	DownService.Reset()
 	diveNumber += 1
-	transition("Dive", string.format("dive %d; banked 0 / %g; oxygen %g", diveNumber, target, Config.OxygenMax))
-	OxygenService.SetActive(true)
+	transition("Dive", string.format("dive %d; banked 0 / %g", diveNumber, target))
+	DownService.SetActive(true)
 	ThreatService.Activate()
 end
 
@@ -72,13 +86,23 @@ function RunService.Start()
 	QuotaService.Start()
 	MovementService.Start()
 	LootService.Start()
-	OxygenService.Start()
+	DownService.Start()
 	ThreatService.Start()
 	QuotaService.QuotaMet:Connect(function() endDive("quota met") end)
-	OxygenService.Depleted:Connect(checkCrew)
+	DownService.Downed:Connect(checkCrew)
+	Players.PlayerAdded:Connect(function(player: Player)
+		task.defer(function()
+			if player.Parent == Players then runUpdated:FireClient(player, runSnapshot()) end
+		end)
+	end)
 	print(string.format("[Run] Lobby | waiting for a living player; auto-start delay %gs", Config.LobbyDelay))
 	HeartbeatService.Heartbeat:Connect(function(deltaTime: number)
 		phaseElapsed += deltaTime
+		runUpdateElapsed += deltaTime
+		if runUpdateElapsed >= Config.RunUpdateInterval then
+			runUpdateElapsed = 0
+			runUpdated:FireAllClients(runSnapshot())
+		end
 		if phase == "Lobby" then
 			if not crewReady() then
 				phaseElapsed = 0
@@ -105,7 +129,7 @@ function RunService.Start()
 			end
 		elseif phase == "GameOver" and phaseElapsed >= Config.GameOverDelay then
 			QuotaService.Reset(Config.StartingQuota)
-			OxygenService.Reset()
+			DownService.Reset()
 			diveNumber = 0
 			transition("Lobby", "run reset; waiting for crew")
 		end

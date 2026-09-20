@@ -6,18 +6,16 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
-local OxygenTypes = require(Shared:WaitForChild("OxygenTypes"))
 local LootTypes = require(Shared:WaitForChild("LootTypes"))
 local QuotaTypes = require(Shared:WaitForChild("QuotaTypes"))
 local MovementTypes = require(Shared:WaitForChild("MovementTypes"))
+local RunTypes = require(Shared:WaitForChild("RunTypes"))
 local Config = require(Shared:WaitForChild("Config"))
 local lootUpdated = Shared:WaitForChild("Remotes"):WaitForChild("LootUpdated") :: RemoteEvent
 local dropRequested = Shared:WaitForChild("Remotes"):WaitForChild("DropLoot") :: RemoteEvent
 local selectLootSlot = Shared:WaitForChild("Remotes"):WaitForChild("SelectLootSlot") :: RemoteEvent
-local oxygenUpdated = Shared:WaitForChild("Remotes"):WaitForChild("OxygenUpdated") :: RemoteEvent
 local quotaUpdated = Shared:WaitForChild("Remotes"):WaitForChild("QuotaUpdated") :: RemoteEvent
-local flashlightInput = Shared:WaitForChild("Remotes"):WaitForChild("FlashlightInput") :: RemoteEvent
-local flashlightUpdated = Shared:WaitForChild("Remotes"):WaitForChild("FlashlightUpdated") :: RemoteEvent
+local runUpdated = Shared:WaitForChild("Remotes"):WaitForChild("RunUpdated") :: RemoteEvent
 local sprintInput = Shared:WaitForChild("Remotes"):WaitForChild("SprintInput") :: RemoteEvent
 local movementUpdated = Shared:WaitForChild("Remotes"):WaitForChild("MovementUpdated") :: RemoteEvent
 local localPlayer = Players.LocalPlayer
@@ -46,7 +44,7 @@ quotaLabel.Parent = hud
 
 local statusPanel = Instance.new("Frame")
 statusPanel.Position = UDim2.fromOffset(24, 24)
-statusPanel.Size = UDim2.fromOffset(280, 116)
+statusPanel.Size = UDim2.fromOffset(280, 81)
 statusPanel.BackgroundColor3 = Color3.fromRGB(12, 24, 28)
 statusPanel.BackgroundTransparency = 0.15
 statusPanel.BorderSizePixel = 0
@@ -80,7 +78,31 @@ end
 
 local healthFill, healthLabel = createStatusBar("HP", 8, Color3.fromRGB(225, 65, 65))
 local staminaFill, staminaLabel = createStatusBar("STAM", 43, Color3.fromRGB(70, 220, 115))
-local oxygenFill, oxygenLabel = createStatusBar("AIR", 78, Color3.fromRGB(80, 195, 225))
+
+local healthConnection: RBXScriptConnection? = nil
+
+local function updateHealth(humanoid: Humanoid)
+	local fraction = if humanoid.MaxHealth > 0 then math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1) else 0
+	healthFill.Size = UDim2.fromScale(fraction, 1)
+	healthLabel.Text = if humanoid.Health <= 0 then "DOWN" else string.format("HP %d", math.ceil(humanoid.Health))
+end
+
+local function bindCharacter(character: Model)
+	if healthConnection then healthConnection:Disconnect() end
+	healthConnection = nil
+	local instance = character:WaitForChild("Humanoid")
+	if localPlayer.Character ~= character or not instance:IsA("Humanoid") then return end
+	local humanoid = instance
+	updateHealth(humanoid)
+	healthConnection = humanoid.HealthChanged:Connect(function()
+		updateHealth(humanoid)
+	end)
+end
+
+localPlayer.CharacterAdded:Connect(function(character: Model)
+	task.spawn(bindCharacter, character)
+end)
+if localPlayer.Character then task.spawn(bindCharacter, localPlayer.Character) end
 
 local inventoryConsole = Instance.new("Frame")
 inventoryConsole.AnchorPoint = Vector2.new(0.5, 1)
@@ -137,17 +159,9 @@ quotaUpdated.OnClientEvent:Connect(function(snapshot: QuotaTypes.Snapshot)
 		if snapshot.met then " | QUOTA MET" else "")
 end)
 
-local flashlightEnabled = false
-local aimElapsed = 0
-
-flashlightUpdated.OnClientEvent:Connect(function(enabled: boolean)
-	flashlightEnabled = enabled
-	aimElapsed = Config.Flashlight.AimUpdateInterval
-end)
-
 local markerSettings = Config.SafeZoneMarker
 local safeZonePosition: Vector3? = nil
-local showSafeZoneMarker = false
+local runPhase: RunTypes.Phase = "Lobby"
 local navigationGui = Instance.new("ScreenGui")
 navigationGui.Name = "SafeZoneNavigation"
 navigationGui.ResetOnSpawn = false
@@ -186,7 +200,21 @@ safeZoneArrow.Parent = safeZoneMarker
 RunService.RenderStepped:Connect(function()
 	local target = safeZonePosition
 	local camera = workspace.CurrentCamera
-	safeZoneMarker.Visible = showSafeZoneMarker and target ~= nil and camera ~= nil
+	local character = localPlayer.Character
+	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
+	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
+	local submarine = workspace:FindFirstChild("Submarine")
+	local zoneInstance = if submarine then submarine:FindFirstChild("SafeZone") else nil
+	local zone = if zoneInstance and zoneInstance:IsA("BasePart") then zoneInstance else nil
+	local inSub = false
+	if root and root:IsA("BasePart") and zone then
+		local point = zone.CFrame:PointToObjectSpace(root.Position)
+		local halfSize = zone.Size / 2
+		inSub = math.abs(point.X) <= halfSize.X and math.abs(point.Y) <= halfSize.Y
+			and math.abs(point.Z) <= halfSize.Z
+	end
+	safeZoneMarker.Visible = runPhase == "Dive" and target ~= nil and camera ~= nil
+		and humanoid ~= nil and humanoid.Health > 0 and root ~= nil and not inSub
 	if not safeZoneMarker.Visible or not target or not camera then return end
 	local viewport = camera.ViewportSize
 	if viewport.X <= 0 or viewport.Y <= 0 then
@@ -222,16 +250,6 @@ RunService.RenderStepped:Connect(function()
 	safeZoneMarker.Position = UDim2.fromOffset(point.X, point.Y)
 end)
 
--- Sample camera look as input intent; the server owns the actual light.
-RunService.Heartbeat:Connect(function(deltaTime: number)
-	if not flashlightEnabled then return end
-	aimElapsed += deltaTime
-	if aimElapsed < Config.Flashlight.AimUpdateInterval then return end
-	aimElapsed = 0
-	local camera = workspace.CurrentCamera
-	if camera then flashlightInput:FireServer("Aim", camera.CFrame.LookVector) end
-end)
-
 UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
 	if UserInputService:GetFocusedTextBox() then return end
 	if input.KeyCode == movementSettings.SprintKey then
@@ -247,8 +265,6 @@ UserInputService.InputBegan:Connect(function(input: InputObject, processed: bool
 	end
 	if input.KeyCode == Config.LootDropKey then
 		dropRequested:FireServer()
-	elseif input.KeyCode == Config.Flashlight.ToggleKey then
-		flashlightInput:FireServer("Toggle")
 	end
 end)
 
@@ -260,23 +276,7 @@ UserInputService.WindowFocusReleased:Connect(function()
 	sprintInput:FireServer(false)
 end)
 
-oxygenUpdated.OnClientEvent:Connect(function(snapshot: OxygenTypes.Snapshot)
+runUpdated.OnClientEvent:Connect(function(snapshot: RunTypes.Snapshot)
+	runPhase = snapshot.phase
 	safeZonePosition = snapshot.safeZonePosition
-	showSafeZoneMarker = snapshot.available and not snapshot.inSub and not snapshot.roundEnded
-		and not snapshot.downed and snapshot.health > 0
-	local oxygenFraction = math.clamp(snapshot.oxygen / snapshot.maximum, 0, 1)
-	oxygenFill.Size = UDim2.fromScale(oxygenFraction, 1)
-	oxygenFill.BackgroundColor3 = if oxygenFraction <= 0.25 then Color3.fromRGB(235, 85, 70)
-		else Color3.fromRGB(80, 195, 225)
-	local healthFraction = math.clamp(snapshot.health / snapshot.healthMaximum, 0, 1)
-	healthFill.Size = UDim2.fromScale(healthFraction, 1)
-	local status = if snapshot.roundEnded then "Round ended"
-		elseif snapshot.downed then "Downed"
-		elseif not snapshot.available then "SafeZone missing"
-		elseif snapshot.inSub then "In sub"
-		elseif snapshot.oxygen <= 0 then "OUT OF AIR!"
-		else "Outside sub"
-	oxygenLabel.Text = string.format("AIR %d", math.ceil(snapshot.oxygen))
-	healthLabel.Text = string.format("HP %d", math.ceil(snapshot.health))
-	if status == "Downed" then healthLabel.Text = "DOWN" end
 end)

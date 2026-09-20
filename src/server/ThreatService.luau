@@ -4,8 +4,7 @@ local Players = game:GetService("Players")
 local PathfindingService = game:GetService("PathfindingService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HeartbeatService = game:GetService("RunService")
-local LightService = require(script.Parent:WaitForChild("LightService"))
-local OxygenService = require(script.Parent:WaitForChild("OxygenService"))
+local DownService = require(script.Parent:WaitForChild("DownService"))
 local SafeZoneService = require(script.Parent:WaitForChild("SafeZoneService"))
 
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
@@ -20,7 +19,6 @@ local active = false
 local mode: Mode = "Inactive"
 local creature: Model? = nil
 local body: BasePart? = nil
-local highlight: Highlight? = nil
 local target: Player? = nil
 local patrolDestination = Vector3.zero
 local threatBounds: BasePart? = nil
@@ -57,7 +55,7 @@ local function createEye(model: Model, bodyPart: BasePart, offset: Vector3, name
 	eye.Parent = model
 end
 
-local function createCreature(position: Vector3): (Model, BasePart, Highlight)
+local function createCreature(position: Vector3): (Model, BasePart)
 	local model = Instance.new("Model")
 	model.Name = "AbyssalThreat"
 
@@ -78,20 +76,9 @@ local function createCreature(position: Vector3): (Model, BasePart, Highlight)
 	createEye(model, part, settings.EyeOffset, "LeftEye")
 	createEye(model, part, Vector3.new(-settings.EyeOffset.X, settings.EyeOffset.Y, settings.EyeOffset.Z), "RightEye")
 
-	local beamHighlight = Instance.new("Highlight")
-	beamHighlight.Name = "FlashlightHighlight"
-	beamHighlight.Adornee = model
-	beamHighlight.DepthMode = Enum.HighlightDepthMode.Occluded
-	beamHighlight.FillColor = settings.IlluminatedBodyColor
-	beamHighlight.FillTransparency = settings.HighlightFillTransparency
-	beamHighlight.OutlineColor = settings.EyeColor
-	beamHighlight.OutlineTransparency = settings.HighlightOutlineTransparency
-	beamHighlight.Enabled = false
-	beamHighlight.Parent = model
-
 	model.PrimaryPart = part
 	model.Parent = workspace
-	return model, part, beamHighlight
+	return model, part
 end
 
 local function findRuinMarker(name: string): BasePart?
@@ -241,18 +228,6 @@ local function choosePatrolDestination(): boolean
 	return false
 end
 
-local function updateVisibility(part: BasePart)
-	local illuminated = false
-	for _, player in Players:GetPlayers() do
-		if LightService.IsIlluminating(player, part.Position) then
-			illuminated = true
-			break
-		end
-	end
-	part.Color = if illuminated then settings.IlluminatedBodyColor else settings.BodyColor
-	if highlight then highlight.Enabled = illuminated end
-end
-
 local function characterRoot(player: Player): BasePart?
 	local character = player.Character
 	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
@@ -260,29 +235,38 @@ local function characterRoot(player: Player): BasePart?
 	if not character or not humanoid or humanoid.Health <= 0 or not root or not root:IsA("BasePart") then
 		return nil
 	end
-	if OxygenService.IsDowned(player) then return nil end
+	if DownService.IsDowned(player) then return nil end
 	local zone = SafeZoneService.Find()
 	if zone and SafeZoneService.IsCharacterInside(character, root, zone) then return nil end
 	return root
 end
 
-local function nearestDetectable(from: Vector3): (Player?, number, boolean)
+local function hasClearLine(model: Model, player: Player, from: Vector3, destination: Vector3): boolean
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = {model}
+	local result = workspace:Raycast(from, destination - from, params)
+	local character = player.Character
+	return result == nil or (character ~= nil and result.Instance:IsDescendantOf(character))
+end
+
+local function nearestDetectable(model: Model, part: BasePart): (Player?, number)
 	local nearest: Player? = nil
 	local nearestDistance = math.huge
-	local nearestLit = false
+	local minimumDot = math.cos(math.rad(settings.FieldOfViewAngle / 2))
 	for _, player in Players:GetPlayers() do
 		local root = characterRoot(player)
 		if not root then continue end
-		local lit = LightService.IsEnabled(player)
-		local radius = if lit then settings.LitDetectionRadius else settings.DarkDetectionRadius
-		local distance = (root.Position - from).Magnitude
-		if distance <= radius and distance < nearestDistance then
+		local offset = root.Position - part.Position
+		local distance = offset.Magnitude
+		if distance <= settings.SightRange and distance < nearestDistance
+			and (distance == 0 or part.CFrame.LookVector:Dot(offset.Unit) >= minimumDot)
+			and hasClearLine(model, player, part.Position, root.Position) then
 			nearest = player
 			nearestDistance = distance
-			nearestLit = lit
 		end
 	end
-	return nearest, nearestDistance, nearestLit
+	return nearest, nearestDistance
 end
 
 local function refreshPath(part: BasePart, destination: Vector3): boolean
@@ -319,23 +303,12 @@ local function moveAlongPath(model: Model, part: BasePart, destination: Vector3,
 	return planarDistance(part.Position, destination) <= settings.PatrolArrivalDistance, true
 end
 
-local function hasClearAttackLine(model: Model, player: Player, from: Vector3, destination: Vector3): boolean
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	local excluded: {Instance} = {model}
-	if player.Character then table.insert(excluded, player.Character) end
-	params.FilterDescendantsInstances = excluded
-	params.RespectCanCollide = true
-	return workspace:Raycast(from, destination - from, params) == nil
-end
-
 local function update(elapsed: number)
 	local part = body
 	local model = creature
 	if not active or not model or not part or not part:IsDescendantOf(workspace) then return end
-	updateVisibility(part)
 
-	local detected, distance, lit = nearestDetectable(part.Position)
+	local detected, distance = nearestDetectable(model, part)
 	if detected ~= target then
 		if target then
 			print(string.format("[Threat] Target lost: %s | %s -> idle", target.Name,
@@ -348,8 +321,8 @@ local function update(elapsed: number)
 			chaseElapsed = 0
 			sprintAfter = random:NextNumber(settings.SprintDelayMinimum, settings.SprintDelayMaximum)
 			sprinting = false
-			print(string.format("[Threat] Idle -> chase | target %s; flashlight %s; distance %.1f; sprint in %.1fs",
-				detected.Name, if lit then "ON" else "OFF", distance, sprintAfter))
+			print(string.format("[Threat] Idle -> chase | target %s; visible at %.1f studs; sprint in %.1fs",
+				detected.Name, distance, sprintAfter))
 		else
 			mode = "Idle"
 			chaseElapsed = 0
@@ -381,12 +354,12 @@ local function update(elapsed: number)
 		local _, hasPath = moveAlongPath(model, part, root.Position, speed, elapsed)
 		local attackDistance = (root.Position - part.Position).Magnitude
 		if hasPath and attackDistance <= settings.AttackDistance
-			and hasClearAttackLine(model, chasedPlayer, part.Position, root.Position) then
+			and hasClearLine(model, chasedPlayer, part.Position, root.Position) then
 			target = nil
 			mode = "Idle"
 			chaseElapsed = 0
 			sprinting = false
-			if OxygenService.DownPlayer(chasedPlayer, "caught by threat") then
+			if DownService.DownPlayer(chasedPlayer, "caught by threat") then
 				print(string.format("[Threat] Player downed: %s", chasedPlayer.Name))
 			end
 			if active then choosePatrolDestination() end
@@ -416,10 +389,9 @@ function ThreatService.Activate()
 		warn(string.format("[Threat] No valid spawn after %d attempts; check ThreatBounds, map collision, or SpawnMinimumDistance.", spawnAttempt))
 		return
 	end
-	local model, part, beamHighlight = createCreature(spawnPosition)
+	local model, part = createCreature(spawnPosition)
 	creature = model
 	body = part
-	highlight = beamHighlight
 	choosePatrolDestination()
 	target = nil
 	mode = "Idle"
@@ -443,7 +415,6 @@ function ThreatService.Deactivate()
 	end
 	creature = nil
 	body = nil
-	highlight = nil
 	clearNavigation()
 	threatBounds = nil
 end
@@ -451,9 +422,8 @@ end
 function ThreatService.Start()
 	if started then return end
 	assert(isFinitePositive(settings.MoveSpeed)
-		and isFinitePositive(settings.DarkDetectionRadius)
-		and settings.LitDetectionRadius > settings.DarkDetectionRadius
-		and isFinitePositive(settings.LitDetectionRadius)
+		and isFinitePositive(settings.SightRange)
+		and settings.FieldOfViewAngle > 0 and settings.FieldOfViewAngle <= 360
 		and isFinitePositive(settings.ChaseSpeed)
 		and isFinitePositive(settings.SprintSpeed)
 		and settings.SprintSpeed > settings.ChaseSpeed
@@ -487,7 +457,8 @@ function ThreatService.Start()
 		updateRunning = false
 		if not success then warn("[Threat] Update failed: " .. tostring(message)) end
 	end)
-	print(string.format("[Threat] Service ready: spawn >=%g studs from SafeZone, path agent %gx%g, patrol %g/s, chase %g/s, sprint %g/s.",
+	print(string.format("[Threat] Service ready: sight %g studs / %g degree FOV, spawn >=%g studs from SafeZone, path agent %gx%g, patrol %g/s, chase %g/s, sprint %g/s.",
+		settings.SightRange, settings.FieldOfViewAngle,
 		settings.SpawnMinimumDistance, settings.PathAgentRadius * 2, settings.PathAgentHeight,
 		settings.MoveSpeed, settings.ChaseSpeed, settings.SprintSpeed))
 end
