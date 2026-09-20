@@ -14,14 +14,32 @@ function AtmosphereService.Start()
 		and settings.ViewDistance < math.huge, "Config.Underwater needs 0 <= FogStart < finite ViewDistance")
 	started = true
 
-	-- Atmosphere overrides linear fog. Remove it only in the running session;
-	-- the authored scene remains intact when Studio stops Play.
+	local atmosphere = Lighting:FindFirstChildOfClass("Atmosphere")
+	if not atmosphere then
+		atmosphere = Instance.new("Atmosphere")
+		atmosphere.Name = "Atmosphere"
+		atmosphere.Parent = Lighting
+	end
+
 	for _, child in Lighting:GetChildren() do
-		if child:IsA("Atmosphere") then
-			warn(string.format("[Atmosphere] Removing %s during Play so underwater fog can work", child.Name))
+		if child:IsA("Atmosphere") and child ~= atmosphere then
+			warn(string.format("[Atmosphere] Removing extra Atmosphere %s during Play", child.Name))
 			child:Destroy()
+		elseif child:IsA("ColorCorrectionEffect") then
+			child.Enabled = false
+			child.Brightness = 0
+			child.Contrast = 0
+			child.Saturation = 0
+			child.TintColor = Color3.new(1, 1, 1)
 		end
 	end
+
+	atmosphere.Color = settings.AtmosphereColor
+	atmosphere.Decay = settings.AtmosphereDecay
+	atmosphere.Density = settings.AtmosphereDensity
+	atmosphere.Offset = settings.AtmosphereOffset
+	atmosphere.Glare = settings.AtmosphereGlare
+	atmosphere.Haze = settings.AtmosphereHaze
 
 	Lighting.FogColor = settings.TintColor
 	Lighting.FogStart = settings.FogStart
@@ -43,12 +61,10 @@ function AtmosphereService.Start()
 		sky.Name = "UnderwaterSky"
 		sky.Parent = Lighting
 	end
-	-- Keep the night sky from advertising an open surface above the player.
-	-- Fog obscures geometry, but does not hide celestial bodies or stars.
 	sky.CelestialBodiesShown = settings.CelestialBodiesShown
 	sky.StarCount = settings.StarCount
 
-	print(string.format("[Atmosphere] Underwater look applied | fog %g-%g studs; clock %g; brightness %g",
+	print(string.format("[Atmosphere] Default lighting restored | fog %g-%g studs; clock %g; brightness %g",
 		settings.FogStart, settings.ViewDistance, settings.ClockTime, settings.Brightness))
 end
 
