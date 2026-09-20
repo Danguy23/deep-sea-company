@@ -241,21 +241,31 @@ local function unregister(part: BasePart)
 	entry.prompt:Destroy()
 end
 
-local function depositSelected(player: Player, state: InventoryState, slot: number)
-	local item = state.slots[slot]
-	if not item then return end
-	local value = numericAttribute(item.part, "Value")
-	if value == nil or not registered[item.part] or not CollectionService:HasTag(item.part, "Loot") then
-		warn("[Quota] Deposit rejected: inventory loot is unavailable or has invalid Value."); return
+local function depositAll(player: Player, state: InventoryState)
+	local deposits: {{slot: number, name: string, value: number}} = {}
+	for slot = 1, Config.LootInventoryCapacity do
+		local item = state.slots[slot]
+		if not item then continue end
+		local value = numericAttribute(item.part, "Value")
+		if value == nil or not registered[item.part] or not CollectionService:HasTag(item.part, "Loot") then
+			warn(string.format("[Quota] Deposit rejected for slot %d: inventory loot is unavailable or has invalid Value.", slot))
+			continue
+		end
+		local name = item.part.Name
+		clearSlot(player, state, slot)
+		unregister(item.part)
+		item.part:Destroy()
+		table.insert(deposits, {slot = slot, name = name, value = value})
 	end
-	local name = item.part.Name
-	clearSlot(player, state, slot)
-	unregister(item.part)
-	item.part:Destroy()
+	if #deposits == 0 then return end
+	-- Remove the whole inventory before banking. If one item meets quota and ends
+	-- the Dive, the other items that entered the SafeZone are still deposited.
 	sendSnapshot(player)
-	print(string.format("[Loot] %s deposited slot %d: %s; WalkSpeed=%.2f", player.Name, slot, name,
-		MovementService.GetWalkSpeed(player)))
-	QuotaService.AddValue(player, value, name)
+	for _, deposit in deposits do
+		print(string.format("[Loot] %s deposited slot %d: %s; WalkSpeed=%.2f", player.Name, deposit.slot,
+			deposit.name, MovementService.GetWalkSpeed(player)))
+		QuotaService.AddValue(player, deposit.value, deposit.name)
+	end
 end
 
 local function dropOrDeposit(player: Player)
@@ -269,7 +279,7 @@ local function dropOrDeposit(player: Player)
 		dropSlot(player, slot, "character unavailable"); return
 	end
 	local zone = SafeZoneService.Find()
-	if zone and SafeZoneService.IsCharacterInside(character, root, zone) then depositSelected(player, state, slot)
+	if zone and SafeZoneService.IsCharacterInside(character, root, zone) then depositAll(player, state)
 	else dropSlot(player, slot, "G requested") end
 end
 
@@ -383,13 +393,21 @@ function LootService.Start()
 		accumulated += deltaTime
 		if accumulated < Config.LootUpdateInterval then return end
 		accumulated = 0
+		local zone = SafeZoneService.Find()
 		for player, state in inventories do
-			local humanoid = if player.Character then player.Character:FindFirstChildOfClass("Humanoid") else nil
-			if next(state.slots) ~= nil and (not humanoid or humanoid.Health <= 0) then dropAll(player, "character removed") end
+			local character = player.Character
+			local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
+			local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
+			if next(state.slots) ~= nil and (not humanoid or humanoid.Health <= 0) then
+				dropAll(player, "character removed")
+			elseif not roundEnded and next(state.slots) ~= nil and character and root and root:IsA("BasePart")
+				and zone and SafeZoneService.IsCharacterInside(character, root, zone) then
+				depositAll(player, state)
+			end
 		end
 		for _, player in Players:GetPlayers() do sendSnapshot(player) end
 	end)
-	print("[Loot] Service started. E stores up to four items; 1-4 select; G deposits/drops selected slot.")
+	print("[Loot] Service started. E stores up to four items; SafeZone deposits all; 1-4 select; G drops outside.")
 end
 
 return LootService

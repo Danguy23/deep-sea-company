@@ -4,15 +4,15 @@ return table.freeze({
 	-- Linear fog: shortening the fade range makes the water denser.
 	-- ViewDistance is visual occlusion in studs, not a streaming/render limit.
 	Underwater = table.freeze({
-		FogStart = 8,
-		ViewDistance = 110,
-		TintColor = Color3.fromRGB(10, 28, 32),
-		AmbientColor = Color3.fromRGB(55, 72, 76),
-		Brightness = 0.7,
+		FogStart = 15,
+		ViewDistance = 160,
+		TintColor = Color3.fromRGB(18, 42, 48),
+		AmbientColor = Color3.fromRGB(85, 105, 110),
+		Brightness = 1.5,
 		ClockTime = 0,
-		EnvironmentDiffuseScale = 0.15,
-		EnvironmentSpecularScale = 0.1,
-		ExposureCompensation = 0.15,
+		EnvironmentDiffuseScale = 0.3,
+		EnvironmentSpecularScale = 0.2,
+		ExposureCompensation = 0.35,
 		ColorShift = Color3.new(0, 0, 0),
 		GlobalShadows = true,
 		CelestialBodiesShown = false,

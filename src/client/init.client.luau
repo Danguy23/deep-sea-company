@@ -106,6 +106,7 @@ for index = 1, Config.LootInventoryCapacity do
 	slot.TextWrapped = true
 	slot.Parent = inventoryConsole
 	local stroke = Instance.new("UIStroke")
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	stroke.Color = Color3.fromRGB(80, 105, 110)
 	stroke.Thickness = 2
 	stroke.Parent = slot
