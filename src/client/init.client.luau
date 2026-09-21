@@ -5,6 +5,8 @@ local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local StarterPlayer = game:GetService("StarterPlayer")
+local ContextActionService = game:GetService("ContextActionService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local LootTypes = require(Shared:WaitForChild("LootTypes"))
@@ -29,6 +31,148 @@ hud.ResetOnSpawn = false
 hud.Parent = playerGui
 
 local movementSettings = Config.Movement
+
+-- Adapt Roblox's existing keyboard/gamepad/touch controls at their output boundary.
+-- The captured vector is raw intent, never the smoothed Humanoid.MoveDirection.
+local controls: any = nil
+local originalMove: any = nil
+local movementHumanoid: Humanoid? = nil
+local movementCharacter: Model? = nil
+local movementConnections: {RBXScriptConnection} = {}
+local movementActive = false
+local originalClientJumping = true
+local originalClientSwimming = true
+local movementIntent = Vector3.zero
+local lastMovementSample = -math.huge
+local inputElapsed = 0
+local sprintHeld = false
+local jumpHeld = false
+local inputFocused = true
+local originalPlayerAutoJump = localPlayer.AutoJumpEnabled
+
+local function sendMovementIntent()
+	local character = localPlayer.Character
+	if not character then return end
+	local focused = inputFocused and UserInputService:GetFocusedTextBox() == nil
+	local payload: MovementTypes.Intent = {
+		character = character,
+		move = if focused then movementIntent else Vector3.zero,
+		sprint = focused and sprintHeld,
+		jump = focused and jumpHeld,
+	}
+	sprintInput:FireServer(payload)
+end
+
+local function clearMovementInput()
+	movementIntent = Vector3.zero
+	sprintHeld = false
+	jumpHeld = false
+	lastMovementSample = -math.huge
+	sendMovementIntent()
+end
+
+local function setClientMovementActive(active: boolean)
+	movementActive = active
+	local humanoid, character = movementHumanoid, movementCharacter
+	if humanoid and character then
+		humanoid.Jump = false
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping,
+			not active and originalClientJumping)
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Swimming,
+			not active and originalClientSwimming)
+		humanoid.AutoJumpEnabled = not active and character:GetAttribute("MovementOriginalAutoJump") ~= false
+	end
+	localPlayer.AutoJumpEnabled = not active and originalPlayerAutoJump
+	local button = ContextActionService:GetButton("MovementJump")
+	if button then button.Visible = active end
+	clearMovementInput()
+end
+
+local function unbindMovementCharacter()
+	setClientMovementActive(false)
+	for _, connection in movementConnections do connection:Disconnect() end
+	table.clear(movementConnections)
+	movementCharacter = nil
+	movementHumanoid = nil
+end
+
+local function bindMovementCharacter(character: Model, humanoid: Humanoid)
+	unbindMovementCharacter()
+	movementCharacter = character
+	movementHumanoid = humanoid
+	originalClientJumping = humanoid:GetStateEnabled(Enum.HumanoidStateType.Jumping)
+	originalClientSwimming = humanoid:GetStateEnabled(Enum.HumanoidStateType.Swimming)
+	local function refresh()
+		setClientMovementActive(humanoid.Health > 0 and character:GetAttribute("GroundedFloatyActive") == true)
+	end
+	table.insert(movementConnections, character:GetAttributeChangedSignal("GroundedFloatyActive"):Connect(refresh))
+	table.insert(movementConnections, humanoid.Died:Connect(unbindMovementCharacter))
+	refresh()
+end
+
+-- Loading in a task keeps the HUD/character hooks available during PlayerModule startup.
+task.spawn(function()
+	local playerModule = StarterPlayer:FindFirstChild("PlayerModule")
+	if playerModule and playerModule:FindFirstChild("ControlModule") then
+		-- Current Roblox layout: the singleton ControlModule lives in StarterPlayer.
+		controls = require(playerModule:WaitForChild("ControlModule") :: ModuleScript)
+	else
+		-- Legacy Roblox layout exposes the same control adapter through GetControls().
+		local legacy = localPlayer:WaitForChild("PlayerScripts"):WaitForChild("PlayerModule") :: ModuleScript
+		controls = require(legacy):GetControls()
+	end
+	assert(typeof(controls.moveFunction) == "function", "[Movement] Roblox control adapter has no moveFunction")
+	originalMove = controls.moveFunction
+	controls.moveFunction = function(player: Player, move: Vector3, cameraRelative: boolean)
+		local humanoid = movementHumanoid
+		if cameraRelative and humanoid then move = controls:calculateRawMoveVector(humanoid, move) end
+		movementIntent = Vector3.new(move.X, 0, move.Z)
+		lastMovementSample = os.clock()
+		if not movementActive then originalMove(player, move, false) end
+	end
+end)
+
+local function movementAction(action: string, inputState: Enum.UserInputState, _input: InputObject): Enum.ContextActionResult
+	if action == "MovementJump" and not movementActive then return Enum.ContextActionResult.Pass end
+	if inputState == Enum.UserInputState.Begin then
+		if UserInputService:GetFocusedTextBox() or not inputFocused then return Enum.ContextActionResult.Pass end
+		if action == "MovementJump" then jumpHeld = true else sprintHeld = true end
+	elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
+		if action == "MovementJump" then jumpHeld = false else sprintHeld = false end
+	else
+		return Enum.ContextActionResult.Sink
+	end
+	-- Edges send immediately so a quick tap between regular packets is not lost.
+	sendMovementIntent()
+	return Enum.ContextActionResult.Sink
+end
+
+ContextActionService:BindActionAtPriority("MovementSprint", movementAction, true, Enum.ContextActionPriority.High.Value,
+	movementSettings.SprintKey, movementSettings.SprintGamepadKey)
+ContextActionService:BindActionAtPriority("MovementJump", movementAction, true, Enum.ContextActionPriority.High.Value,
+	movementSettings.JumpKey, movementSettings.JumpGamepadKey)
+ContextActionService:SetTitle("MovementSprint", "Sprint")
+ContextActionService:SetTitle("MovementJump", "Jump")
+ContextActionService:SetPosition("MovementSprint", movementSettings.SprintTouchPosition)
+ContextActionService:SetPosition("MovementJump", movementSettings.JumpTouchPosition)
+
+local function updateMovementInput(deltaTime: number)
+	if movementActive and movementHumanoid then movementHumanoid.Jump = false end
+	if os.clock() - lastMovementSample > movementSettings.InputTimeout then movementIntent = Vector3.zero end
+	inputElapsed += deltaTime
+	if inputElapsed >= 1 / movementSettings.InputSendRate then
+		inputElapsed %= 1 / movementSettings.InputSendRate
+		sendMovementIntent()
+	end
+end
+
+localPlayer.CharacterRemoving:Connect(unbindMovementCharacter)
+script.Destroying:Connect(function()
+	unbindMovementCharacter()
+	if controls and originalMove then controls.moveFunction = originalMove end
+	ContextActionService:UnbindAction("MovementSprint")
+	ContextActionService:UnbindAction("MovementJump")
+end)
 
 local quotaLabel = Instance.new("TextLabel")
 quotaLabel.AnchorPoint = Vector2.new(0.5, 0)
@@ -94,6 +238,7 @@ local function bindCharacter(character: Model)
 	local instance = character:WaitForChild("Humanoid")
 	if localPlayer.Character ~= character or not instance:IsA("Humanoid") then return end
 	local humanoid = instance
+	bindMovementCharacter(character, humanoid)
 	updateHealth(humanoid)
 	healthConnection = humanoid.HealthChanged:Connect(function()
 		updateHealth(humanoid)
@@ -294,7 +439,8 @@ safeZoneArrow.TextColor3 = markerSettings.Color
 safeZoneArrow.Parent = safeZoneMarker
 
 -- Project the server's SafeZone position each frame so the icon tracks the camera.
-RunService.RenderStepped:Connect(function()
+RunService.RenderStepped:Connect(function(deltaTime: number)
+	updateMovementInput(deltaTime)
 	local target = safeZonePosition
 	local camera = workspace.CurrentCamera
 	local character = localPlayer.Character
@@ -349,10 +495,6 @@ end)
 
 UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
 	if UserInputService:GetFocusedTextBox() then return end
-	if input.KeyCode == movementSettings.SprintKey then
-		sprintInput:FireServer(true)
-		return
-	end
 	if processed then return end
 	for index, keyCode in Config.LootSlotKeys do
 		if input.KeyCode == keyCode then
@@ -365,13 +507,13 @@ UserInputService.InputBegan:Connect(function(input: InputObject, processed: bool
 	end
 end)
 
-UserInputService.InputEnded:Connect(function(input: InputObject)
-	if input.KeyCode == movementSettings.SprintKey then sprintInput:FireServer(false) end
+UserInputService.WindowFocusReleased:Connect(function()
+	inputFocused = false
+	clearMovementInput()
 end)
 
-UserInputService.WindowFocusReleased:Connect(function()
-	sprintInput:FireServer(false)
-end)
+UserInputService.WindowFocused:Connect(function() inputFocused = true end)
+UserInputService.TextBoxFocused:Connect(clearMovementInput)
 
 runUpdated.OnClientEvent:Connect(function(snapshot: RunTypes.Snapshot)
 	runPhase = snapshot.phase
