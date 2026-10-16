@@ -10,6 +10,7 @@ local runUpdated = Shared:WaitForChild("Remotes"):WaitForChild("RunUpdated") :: 
 local MovementService = require(script.Parent:WaitForChild("MovementService"))
 local DownService = require(script.Parent:WaitForChild("DownService"))
 local LootService = require(script.Parent:WaitForChild("LootService"))
+local MapService = require(script.Parent:WaitForChild("MapService"))
 local QuotaService = require(script.Parent:WaitForChild("QuotaService"))
 local SafeZoneService = require(script.Parent:WaitForChild("SafeZoneService"))
 local ThreatService = require(script.Parent:WaitForChild("ThreatService"))
@@ -68,7 +69,48 @@ local function crewReady(): boolean
 	return true
 end
 
+-- Spreads living characters in a grid over the SafeZone footprint, standing on its
+-- floor, so nobody is left in a map that is about to be torn down or starts stacked.
+local function gatherCrewInSub()
+	local zone = SafeZoneService.Find()
+	if not zone then
+		warn("[Run] MISSING Workspace.Submarine.SafeZone; crew stays where it is for this Dive.")
+		return
+	end
+	local crew: {{root: BasePart, humanoid: Humanoid, character: Model}} = {}
+	for _, player in Players:GetPlayers() do
+		local character = player.Character
+		local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
+		local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
+		if character and humanoid and humanoid.Health > 0 and root and root:IsA("BasePart") then
+			table.insert(crew, {root = root, humanoid = humanoid, character = character})
+		end
+	end
+	if #crew == 0 then return end
+	local columns = math.ceil(math.sqrt(#crew))
+	local rows = math.ceil(#crew / columns)
+	local cellX, cellZ = zone.Size.X / columns, zone.Size.Z / rows
+	local floorY = -zone.Size.Y / 2
+	for index, member in crew do
+		local column = (index - 1) % columns
+		local row = (index - 1) // columns
+		local standHeight = member.humanoid.HipHeight + member.root.Size.Y / 2 + Config.CrewGatherClearance
+		local spot = zone.CFrame * CFrame.new(
+			-zone.Size.X / 2 + cellX * (column + 0.5),
+			floorY + standHeight,
+			-zone.Size.Z / 2 + cellZ * (row + 0.5)
+		)
+		member.root.AssemblyLinearVelocity = Vector3.zero
+		member.character:PivotTo(spot)
+	end
+end
+
 local function beginDive(nextQuota: number?)
+	gatherCrewInSub()
+	MapService.Teardown()
+	if not MapService.Build() then
+		warn("[Run] Map build FAILED; diving with the Submarine alone.")
+	end
 	local target = nextQuota or QuotaService.GetSnapshot().quota
 	QuotaService.Reset(target)
 	MovementService.Reset()
@@ -130,6 +172,7 @@ function RunService.Start()
 		elseif phase == "GameOver" and phaseElapsed >= Config.GameOverDelay then
 			QuotaService.Reset(Config.StartingQuota)
 			DownService.Reset()
+			MapService.Teardown()
 			diveNumber = 0
 			transition("Lobby", "run reset; waiting for crew")
 		end

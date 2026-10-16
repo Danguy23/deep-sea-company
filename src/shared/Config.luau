@@ -150,6 +150,7 @@ return table.freeze({
 	LootSpawnMinSeparation = 8,
 	StartingQuota = 200,
 	QuotaIncrease = 50,
+	CrewGatherClearance = 0.5, -- studs above the sub floor when the crew is moved in at Dive start
 	LobbyDelay = 3,
 	ReturnDelay = 1,
 	PayoutDelay = 2,
