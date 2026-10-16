@@ -383,6 +383,10 @@ end
 
 function ThreatService.Activate()
 	ThreatService.Deactivate()
+	if not settings.Enabled then
+		print("[Threat] Disabled by Config.Threat.Enabled; no creature this Dive.")
+		return
+	end
 	local zone = SafeZoneService.Find()
 	if not zone then
 		warn("[Threat] MISSING Workspace.Submarine.SafeZone; creature cannot spawn for this Dive.")

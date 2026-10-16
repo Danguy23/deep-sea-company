@@ -61,6 +61,7 @@ return table.freeze({
 		CharacterWaitSeconds = 5,
 	}),
 	Threat = table.freeze({
+		Enabled = false, -- false keeps the creature from spawning at Dive start; all threat code stays in place
 		MoveSpeed = 10,
 		SightRange = 100,
 		FieldOfViewAngle = 120,
