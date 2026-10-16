@@ -12,8 +12,10 @@ rojo build -o "deep-sea-company.rbxlx"
 
 Open the authored salvage place in Roblox Studio, run `rojo serve`, connect the
 Rojo plugin, sync, and Play with Output open. The hand-built scene must contain
-`Workspace.Submarine.SafeZone`, `Workspace.GreyboxRuin.ThreatBounds`, and Parts
-tagged `Loot` with numeric `Value` attributes.
+`Workspace.Submarine` (with `SafeZone`, `Floor`, and a `Hatch` Connector),
+room templates in `ServerStorage.RoomTemplates`, and Parts tagged `Loot` with
+numeric `Value` attributes. Each Dive generates its map into
+`Workspace.GeneratedMap`; filter Output for `[Map]` to see the seed and summary.
 
 ## Current playtest
 
@@ -62,8 +64,9 @@ Restore the expected scene name before continuing.
 
 All tunables live in `src/shared/Config.luau`. Important threat controls are
 `SightRange` and `FieldOfViewAngle`. Loot placement samples random ground points
-throughout `GreyboxRuin.ThreatBounds`; padding, SafeZone distance, attempts, and
-minimum separation are configurable.
+inside the generated rooms (bigger rooms get more loot); padding, SafeZone
+distance, attempts, and minimum separation are configurable. Map size, room pool
+weights, and an optional fixed seed live in `Config.MapGen`.
 
 All persistent game logic lives under `src/`. Studio or MCP should only be used
 for the physical scene and playtesting.

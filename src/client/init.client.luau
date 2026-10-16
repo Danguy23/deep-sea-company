@@ -344,9 +344,6 @@ local function updateLootFeedback()
 		local submarine = workspace:FindFirstChild("Submarine")
 		local safeZone = if submarine then submarine:FindFirstChild("SafeZone") else nil
 		if safeZone then table.insert(excluded, safeZone) end
-		local ruin = workspace:FindFirstChild("GreyboxRuin")
-		local threatBounds = if ruin then ruin:FindFirstChild("ThreatBounds", true) else nil
-		if threatBounds then table.insert(excluded, threatBounds) end
 		rayParams.FilterDescendantsInstances = excluded
 		rayParams.IgnoreWater = true
 		for _, instance in CollectionService:GetTagged("Loot") do

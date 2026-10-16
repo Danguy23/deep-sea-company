@@ -6,6 +6,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HeartbeatService = game:GetService("RunService")
 local DownService = require(script.Parent:WaitForChild("DownService"))
 local SafeZoneService = require(script.Parent:WaitForChild("SafeZoneService"))
+local MapService = require(script.Parent:WaitForChild("MapService"))
 
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
 local settings = Config.Threat
@@ -21,7 +22,6 @@ local creature: Model? = nil
 local body: BasePart? = nil
 local target: Player? = nil
 local patrolDestination = Vector3.zero
-local threatBounds: BasePart? = nil
 local currentPath: Path? = nil
 local pathWaypoints = {} :: {PathWaypoint}
 local pathWaypointIndex = 1
@@ -81,28 +81,33 @@ local function createCreature(position: Vector3): (Model, BasePart)
 	return model, part
 end
 
-local function findRuinMarker(name: string): BasePart?
-	local ruin = workspace:FindFirstChild("GreyboxRuin")
-	local marker = if ruin then ruin:FindFirstChild(name, true) else nil
-	if marker and marker:IsA("BasePart") then return marker end
-	return nil
-end
-
-local function clampToThreatBounds(destination: Vector3): Vector3
-	local bounds = threatBounds
-	if not bounds then return destination end
-	local halfSize = bounds.Size / 2
-	local localPosition = bounds.CFrame:PointToObjectSpace(destination)
-	local clamped = bounds.CFrame:PointToWorldSpace(Vector3.new(
-		math.clamp(localPosition.X, -halfSize.X, halfSize.X),
-		0,
-		math.clamp(localPosition.Z, -halfSize.Z, halfSize.Z)
-	))
-	return Vector3.new(clamped.X, destination.Y, clamped.Z)
-end
-
 local function planarDistance(first: Vector3, second: Vector3): number
 	return (Vector3.new(first.X, 0, first.Z) - Vector3.new(second.X, 0, second.Z)).Magnitude
+end
+
+-- A destination inside any generated room is kept; otherwise it moves into the nearest room.
+local function clampToRooms(destination: Vector3): Vector3
+	local nearest: Vector3? = nil
+	local nearestDistance = math.huge
+	for _, bounds in MapService.GetRoomBounds() do
+		local halfSize = bounds.Size / 2
+		local localPosition = bounds.CFrame:PointToObjectSpace(destination)
+		if math.abs(localPosition.X) <= halfSize.X and math.abs(localPosition.Z) <= halfSize.Z then
+			return destination
+		end
+		local clamped = bounds.CFrame:PointToWorldSpace(Vector3.new(
+			math.clamp(localPosition.X, -halfSize.X, halfSize.X),
+			0,
+			math.clamp(localPosition.Z, -halfSize.Z, halfSize.Z)
+		))
+		local candidate = Vector3.new(clamped.X, destination.Y, clamped.Z)
+		local distance = planarDistance(candidate, destination)
+		if distance < nearestDistance then
+			nearest = candidate
+			nearestDistance = distance
+		end
+	end
+	return nearest or destination
 end
 
 local function clearNavigation()
@@ -153,21 +158,22 @@ local function usePath(path: Path, waypoints: {PathWaypoint}, goal: Vector3, sta
 end
 
 local function makeGroundRayParams(): RaycastParams?
-	local ruin = workspace:FindFirstChild("GreyboxRuin")
-	local floors = if ruin then ruin:FindFirstChild("Floors") else nil
+	local floors = MapService.GetFloors()
 	local submarine = workspace:FindFirstChild("Submarine")
 	local submarineFloor = if submarine then submarine:FindFirstChild("Floor") else nil
-	if not floors or not submarineFloor or not submarineFloor:IsA("BasePart") then return nil end
+	if #floors == 0 or not submarineFloor or not submarineFloor:IsA("BasePart") then return nil end
+	table.insert(floors, submarineFloor)
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Include
-	params.FilterDescendantsInstances = {floors, submarineFloor}
+	params.FilterDescendantsInstances = floors
 	params.RespectCanCollide = true
 	return params
 end
 
-local function makeClearanceParams(bounds: BasePart, zone: BasePart): OverlapParams
-	local excluded: {Instance} = {bounds, zone}
-	if bounds.Parent then table.insert(excluded, bounds.Parent) end
+-- Only Bounds volumes are ignored, so room walls and props still block a spawn.
+local function makeClearanceParams(zone: BasePart): OverlapParams
+	local excluded: {Instance} = {zone}
+	for _, bounds in MapService.GetRoomBounds() do table.insert(excluded, bounds) end
 	if creature then table.insert(excluded, creature :: Model) end
 	for _, player in Players:GetPlayers() do
 		if player.Character then table.insert(excluded, player.Character) end
@@ -179,10 +185,14 @@ local function makeClearanceParams(bounds: BasePart, zone: BasePart): OverlapPar
 	return params
 end
 
-local function randomGroundPosition(bounds: BasePart, zone: BasePart, minimumDistance: number): Vector3?
+local function randomGroundPosition(zone: BasePart, minimumDistance: number): Vector3?
+	local rooms = MapService.GetRooms()
+	if #rooms == 0 then return nil end
+	local bounds = rooms[random:NextInteger(1, #rooms)].PrimaryPart
+	if not bounds then return nil end
 	local groundParams = makeGroundRayParams()
 	if not groundParams then return nil end
-	local clearanceParams = makeClearanceParams(bounds, zone)
+	local clearanceParams = makeClearanceParams(zone)
 	local halfSize = bounds.Size / 2
 	local point = bounds.CFrame:PointToWorldSpace(Vector3.new(
 		random:NextNumber(-halfSize.X, halfSize.X),
@@ -190,17 +200,19 @@ local function randomGroundPosition(bounds: BasePart, zone: BasePart, minimumDis
 		random:NextNumber(-halfSize.Z, halfSize.Z)
 	))
 	if planarDistance(point, zone.Position) < minimumDistance then return nil end
-	local rayOrigin = Vector3.new(point.X, bounds.Position.Y + settings.SpawnRayHeight, point.Z)
-	local ground = workspace:Raycast(rayOrigin, -Vector3.yAxis * settings.SpawnRayHeight * 2, groundParams)
+	-- Cast from the room's top through its full height: rooms differ in height, so
+	-- a fixed offset from the Bounds center can stop short of a tall room's floor.
+	local rayOrigin = Vector3.new(point.X, bounds.Position.Y + halfSize.Y + settings.SpawnRayHeight, point.Z)
+	local ground = workspace:Raycast(rayOrigin, -Vector3.yAxis * (bounds.Size.Y + settings.SpawnRayHeight * 2), groundParams)
 	if not ground or ground.Normal.Y < settings.SpawnMinimumGroundNormalY then return nil end
 	local position = ground.Position + Vector3.yAxis * (settings.BodySize.Y / 2 + settings.SpawnGroundClearance)
 	if #workspace:GetPartBoundsInBox(CFrame.new(position), settings.BodySize, clearanceParams) > 0 then return nil end
 	return position
 end
 
-local function chooseSpawnPosition(bounds: BasePart, zone: BasePart): (Vector3?, number)
+local function chooseSpawnPosition(zone: BasePart): (Vector3?, number)
 	for attempt = 1, settings.SpawnAttempts do
-		local candidate = randomGroundPosition(bounds, zone, settings.SpawnMinimumDistance)
+		local candidate = randomGroundPosition(zone, settings.SpawnMinimumDistance)
 		if not candidate then continue end
 		local path = computePath(candidate, zone.Position)
 		if path then return candidate, attempt end
@@ -210,11 +222,10 @@ end
 
 local function choosePatrolDestination(): boolean
 	local part = body
-	local bounds = threatBounds
 	local zone = SafeZoneService.Find()
-	if not part or not bounds or not zone then return false end
+	if not part or not zone then return false end
 	for _ = 1, settings.SpawnAttempts do
-		local candidate = randomGroundPosition(bounds, zone, 0)
+		local candidate = randomGroundPosition(zone, 0)
 		if not candidate then continue end
 		local path, waypoints = computePath(part.Position, candidate)
 		if path and waypoints then
@@ -224,7 +235,7 @@ local function choosePatrolDestination(): boolean
 		end
 	end
 	clearNavigation()
-	warn("[Threat] Could not find a reachable patrol destination inside ThreatBounds.")
+	warn("[Threat] Could not find a reachable patrol destination inside the generated rooms.")
 	return false
 end
 
@@ -277,7 +288,7 @@ local function refreshPath(part: BasePart, destination: Vector3): boolean
 end
 
 local function moveAlongPath(model: Model, part: BasePart, destination: Vector3, speed: number, elapsed: number): (boolean, boolean)
-	destination = clampToThreatBounds(destination)
+	destination = clampToRooms(destination)
 	pathAge += elapsed
 	local goalMoved = if pathGoal then planarDistance(pathGoal, destination) else math.huge
 	local needsPath = not currentPath or pathBlocked or pathAge >= settings.PathRecomputeInterval
@@ -377,16 +388,13 @@ function ThreatService.Activate()
 		warn("[Threat] MISSING Workspace.Submarine.SafeZone; creature cannot spawn for this Dive.")
 		return
 	end
-	local bounds = findRuinMarker("ThreatBounds")
-	if not bounds then
-		warn("[Threat] MISSING Workspace.GreyboxRuin ThreatBounds Part; creature cannot spawn outside authored ruin bounds.")
+	if #MapService.GetRooms() == 0 then
+		warn("[Threat] MISSING generated map rooms (MapService); creature cannot spawn for this Dive.")
 		return
 	end
-	threatBounds = bounds
-	local spawnPosition, spawnAttempt = chooseSpawnPosition(bounds, zone)
+	local spawnPosition, spawnAttempt = chooseSpawnPosition(zone)
 	if not spawnPosition then
-		threatBounds = nil
-		warn(string.format("[Threat] No valid spawn after %d attempts; check ThreatBounds, map collision, or SpawnMinimumDistance.", spawnAttempt))
+		warn(string.format("[Threat] No valid spawn after %d attempts; check generated room Bounds and Floors, map collision, or SpawnMinimumDistance.", spawnAttempt))
 		return
 	end
 	local model, part = createCreature(spawnPosition)
@@ -416,7 +424,6 @@ function ThreatService.Deactivate()
 	creature = nil
 	body = nil
 	clearNavigation()
-	threatBounds = nil
 end
 
 function ThreatService.Start()

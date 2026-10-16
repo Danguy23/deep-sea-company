@@ -8,6 +8,7 @@ local ServerStorage = game:GetService("ServerStorage")
 local SafeZoneService = require(script.Parent:WaitForChild("SafeZoneService"))
 local QuotaService = require(script.Parent:WaitForChild("QuotaService"))
 local MovementService = require(script.Parent:WaitForChild("MovementService"))
+local MapService = require(script.Parent:WaitForChild("MapService"))
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = require(Shared:WaitForChild("Config"))
@@ -99,36 +100,30 @@ end
 local function chooseSpawn(part: BasePart, placed: {Vector3}): boolean
 	local zone = SafeZoneService.Find()
 	if not zone then warn("[Loot] Missing SafeZone; keeping authored loot positions."); return true end
-	local ruin = workspace:FindFirstChild("GreyboxRuin")
-	local boundsInstance = if ruin then ruin:FindFirstChild("ThreatBounds", true) else nil
-	if not boundsInstance or not boundsInstance:IsA("BasePart") then
-		warn("[Loot] Missing Workspace.GreyboxRuin ThreatBounds Part; keeping authored loot positions.")
+	if #MapService.GetRooms() == 0 then
+		warn("[Loot] MISSING generated map rooms (MapService); keeping authored loot positions.")
 		return true
 	end
-	local floors = if ruin then ruin:FindFirstChild("Floors") else nil
-	if not floors then
-		warn("[Loot] Missing Workspace.GreyboxRuin.Floors; keeping authored loot positions.")
-		return true
-	end
-	local bounds = boundsInstance
-	local excluded: {Instance} = {zone, bounds}
+	-- Only Bounds volumes are ignored, so room walls and props still block a spawn.
+	local excluded: {Instance} = {zone}
+	for _, roomBounds in MapService.GetRoomBounds() do table.insert(excluded, roomBounds) end
 	for _, player in Players:GetPlayers() do if player.Character then table.insert(excluded, player.Character) end end
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Include
-	rayParams.FilterDescendantsInstances = {floors}
+	rayParams.FilterDescendantsInstances = MapService.GetFloors()
 	rayParams.RespectCanCollide = true
 	local overlap = OverlapParams.new()
 	overlap.FilterType = Enum.RaycastFilterType.Exclude
 	overlap.FilterDescendantsInstances = excluded
 	overlap.RespectCanCollide = true
-	local halfSize = bounds.Size / 2
-	local usableX = halfSize.X - Config.LootSpawnBoundsPadding
-	local usableZ = halfSize.Z - Config.LootSpawnBoundsPadding
-	if usableX <= 0 or usableZ <= 0 then
-		warn("[Loot] ThreatBounds is too small for LootSpawnBoundsPadding; keeping authored loot positions.")
-		return true
-	end
 	for _ = 1, Config.LootSpawnAttempts do
+		local room = MapService.RandomRoom(random)
+		local bounds = if room then room.PrimaryPart else nil
+		if not bounds then continue end
+		local halfSize = bounds.Size / 2
+		local usableX = halfSize.X - Config.LootSpawnBoundsPadding
+		local usableZ = halfSize.Z - Config.LootSpawnBoundsPadding
+		if usableX <= 0 or usableZ <= 0 then continue end
 		local point = bounds.CFrame:PointToWorldSpace(Vector3.new(
 			random:NextNumber(-usableX, usableX),
 			0,
@@ -154,7 +149,7 @@ local function chooseSpawn(part: BasePart, placed: {Vector3}): boolean
 			part.Name, sizeClassOf(part) or "Medium", position.X, position.Z, safeZoneOffset.Magnitude))
 		return true
 	end
-	warn("[Loot] No clear spawn across ThreatBounds for " .. part.Name .. "; check bounds, ground, and clearance.")
+	warn("[Loot] No clear spawn across the generated rooms for " .. part.Name .. "; check room Bounds, Floors, and clearance.")
 	return false
 end
 
