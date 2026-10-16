@@ -1,6 +1,6 @@
 --!strict
 -- Assembles prebuilt room templates into a map by mating their Connector
--- attachments. Placement only: picking rooms, randomness, cap removal, and
+-- attachments, then settles the doorway caps. Picking rooms, randomness, and
 -- teardown live elsewhere.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -163,6 +163,45 @@ function RoomStitcher.Attach(
 	cloneConnector:SetAttribute("Mated", true)
 	table.insert(placedRooms, clone)
 	return clone
+end
+
+-- Caps are settled here in one pass rather than inside Attach, because later
+-- generation steps try placements and reject some: a cap opened for a placement
+-- that then gets rolled back would leave a hole to the void. Safe to call twice.
+function RoomStitcher.FinalizeDoorways()
+	local opened, capped, missing = 0, 0, 0
+	for _, room in ipairs(placedRooms) do
+		for id, connector in pairs(RoomStitcher.GetConnectors(room)) do
+			local cap = room:FindFirstChild("Cap_" .. id)
+			if connector:GetAttribute("Mated") == true then
+				-- Both rooms at a joint drop their cap, so the doorway opens from either side.
+				if cap then
+					cap:Destroy()
+					opened += 1
+				end
+			elseif cap == nil then
+				missing += 1
+				warn(string.format(
+					"[RoomStitcher] MISSING Cap_%s on %s; that unused doorway is a hole to the void.",
+					id, room:GetFullName()
+				))
+			elseif cap:IsA("BasePart") then
+				cap.Anchored = true
+				cap.CanCollide = true
+				capped += 1
+			else
+				missing += 1
+				warn(string.format(
+					"[RoomStitcher] Cap_%s on %s is a %s, not a Part; that unused doorway is a hole to the void.",
+					id, room:GetFullName(), cap.ClassName
+				))
+			end
+		end
+	end
+	print(string.format(
+		"[RoomStitcher] Doorways finalized: %d room(s), %d opened, %d capped, %d missing.",
+		#placedRooms, opened, capped, missing
+	))
 end
 
 function RoomStitcher.Reset()
