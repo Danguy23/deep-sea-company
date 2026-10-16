@@ -27,32 +27,34 @@ feature does not feed that tension or the chaos around it, it is out of scope.
   view cone, and line of sight, chases, sprints, and downs on contact.
 - Downed state (DownService): all players downed ends the Dive as a failure.
 - Atmosphere (AtmosphereService): neutral readable lighting baseline.
+- RoomStitcher: pure placement math. Mates a template's Connector to a placed
+  room's Connector, rejects overlapping Bounds, registers persistent rooms (the
+  Submarine) without cloning, and finalizes doorways (destroys mated caps on
+  clones, hides them on persistent rooms, keeps unused doorways capped).
+- Map (MapService): owns the generated map. At every Dive start RunService moves
+  the crew into the sub, tears down the old map, and builds a new seeded,
+  branching map off the Submarine's Hatch from the weighted room pool into
+  Workspace.GeneratedMap. The map stays up through Return/Payout/GameOver and is
+  torn down on GameOver -> Lobby. Loot (weighted by room floor area) and the
+  creature spawn and patrol inside the generated rooms.
 - REMOVED, do not reintroduce: oxygen/air, flashlight, light toggle, heavy
   darkness as the default.
 
-Scene in the place file (Workspace):
-- Submarine with SafeZone, 10 tagged Loot parts.
-- GreyboxRuin: the original playable map. Loot and the creature currently spawn
-  only inside GreyboxRuin.ThreatBounds / GreyboxRuin.Floors.
-- Room_ExperimentLab_01 and Room_ServerRoom_01: the first two modular rooms.
-  Built, not yet used by any code.
+Scene in the place file:
+- Workspace.Submarine: greybox hull (walls, ceiling, light) with SafeZone, Floor,
+  Bounds as PrimaryPart, a "Hatch" Connector in the front doorway, and Cap_Hatch.
+- Workspace.SpawnLocation inside the sub; 10 tagged Loot parts in Workspace.
+- ServerStorage.RoomTemplates: Room_ExperimentLab_01, Room_ServerRoom_01,
+  Room_CorridorStraight_01, Room_CorridorTurn_01, Room_JunctionT_01.
+- ServerStorage.Archive.GreyboxRuin: the original map, archived and unused.
+
+Config.MapGen: MinRooms, MaxRooms (generated rooms, sub not counted),
+PlacementAttemptsPerDoorway, MaxBuildAttempts (seeds tried before keeping a
+short map), Seed (nil = fresh each build; set it to reproduce a layout), and
+RoomPool (template name -> pick weight).
 
 ## Current milestone (build ONLY this)
-Milestone 3: modular map scaffolding. Rooms are prebuilt templates that get
-stitched together at runtime through standard doorways, Lethal Company style.
-Build these steps in order, one at a time, each tested and committed separately:
-1. Retrofit both existing rooms to the Room Connection Contract below.
-2. RoomStitcher module: given a placed room and a template, pick an open
-   connector on each and position the new room so the two connectors mate.
-   No randomness, no generation yet. Test by stitching the lab to the server room
-   and walking through the join.
-3. Capping pass: after stitching, remove caps on mated doorways and keep caps on
-   every unused doorway so there are no holes to the void.
-4. Hook into RunService: build the map at Dive start and tear it down on Dive
-   end. Make loot and the creature spawn inside the generated rooms instead of
-   only GreyboxRuin.
-Random generation, room pools, and per-stage config come after step 4. Do not
-start them early.
+TBD (next milestone not chosen yet). Milestone 3 (modular map generation) is done.
 
 ## Room Connection Contract (every connectable room must follow this)
 - Doorway opening: exactly 10 studs wide x 12 studs high, at floor level.
@@ -65,7 +67,8 @@ start them early.
   doorway's cap. Two rooms mated at a connector must not overlap.
 - Cap: each doorway has a Part named "Cap_<ConnectorId>", 10x12, flush against
   the outer face of the wall, anchored and collidable. Caps start solid. The
-  stitcher removes the caps of mated doorways.
+  stitcher removes the caps of mated doorways (on the persistent Submarine it
+  hides them instead and restores them at teardown).
 - Bounds: each room Model has PrimaryPart set to an anchored, invisible,
   non-collidable Part named "Bounds" that encloses the whole room. The stitcher
   uses Bounds for placement and overlap checks.
@@ -86,19 +89,25 @@ start them early.
   deliberate per-stage setting, never the default.
 
 ## Do NOT build yet (cut list)
-Random/procedural generation beyond the steps above, pressure mechanic, multiple
+Map generation beyond what MapService does now (per-stage config, lighting
+profiles, special or locking rooms), pressure mechanic, multiple
 stages or biomes, shops, upgrades, skill trees, cosmetics, monetization, lore,
 co-op netcode beyond the trivial. Do not add any of these unprompted.
 
 ## World contract (what the code may assume exists)
 The 3D scene is built in Studio (by hand or via MCP), not by game logic.
 Reference these by name:
-- Model "Submarine" in Workspace containing Part "SafeZone". Inside SafeZone
-  means "in the sub": carried loot deposits there.
+- Model "Submarine" in Workspace containing Part "SafeZone" and Part "Floor".
+  Inside SafeZone means "in the sub": carried loot deposits there. The sub has
+  a hull, PrimaryPart "Bounds", and a Connector with ConnectorId "Hatch" (with
+  Cap_Hatch): every generated map grows from that Hatch.
 - Loot: Parts tagged (CollectionService) "Loot", each with a numeric attribute
   "Value".
-- GreyboxRuin with ThreatBounds and Floors (current map, until step 4 replaces it).
-- Room templates following the Room Connection Contract.
+- Room templates following the Room Connection Contract, in
+  ServerStorage.RoomTemplates. MapService clones them into the Workspace Folder
+  "GeneratedMap"; code asks MapService (GetRooms, GetFloors, GetRoomBounds,
+  RandomRoom) where the map is instead of naming rooms.
+- GreyboxRuin is archived in ServerStorage.Archive. No code references it.
 If an expected instance is missing, warn loudly rather than fail silently.
 
 ## Architecture and file layout
