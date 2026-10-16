@@ -100,6 +100,11 @@ return table.freeze({
 		BackgroundColor = Color3.fromRGB(12, 28, 32),
 		BackgroundTransparency = 0.2,
 	}),
+	RoomStitch = table.freeze({
+		-- Mated rooms share a face, so an intersection this shallow is a touch,
+		-- not an overlap. Also the slack on the 90 degree rotation assumption.
+		TouchTolerance = 0.01,
+	}),
 	LootPickupDistance = 10,
 	LootPickupKey = Enum.KeyCode.E,
 	LootPromptHoldDuration = 0,
