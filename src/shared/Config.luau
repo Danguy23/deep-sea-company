@@ -105,6 +105,21 @@ return table.freeze({
 		-- not an overlap. Also the slack on the 90 degree rotation assumption.
 		TouchTolerance = 0.01,
 	}),
+	MapGen = table.freeze({
+		MinRooms = 5, -- generated rooms per map, not counting the Submarine
+		MaxRooms = 9,
+		PlacementAttemptsPerDoorway = 8, -- tries before an open doorway is left capped
+		MaxBuildAttempts = 5, -- seeds tried before keeping a map short of MinRooms
+		Seed = nil :: number?, -- fixed seed for debugging; nil picks a fresh one each build
+		-- Template names in ServerStorage.RoomTemplates and their relative pick weights.
+		RoomPool = table.freeze({
+			Room_ExperimentLab_01 = 3,
+			Room_ServerRoom_01 = 3,
+			Room_CorridorStraight_01 = 2,
+			Room_CorridorTurn_01 = 2,
+			Room_JunctionT_01 = 2,
+		}) :: {[string]: number},
+	}),
 	LootPickupDistance = 10,
 	LootPickupKey = Enum.KeyCode.E,
 	LootPromptHoldDuration = 0,

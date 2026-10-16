@@ -1,7 +1,7 @@
 --!strict
 -- Assembles prebuilt room templates into a map by mating their Connector
 -- attachments, then settles the doorway caps. Picking rooms, randomness, and
--- teardown live elsewhere.
+-- teardown live in MapService.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -9,11 +9,18 @@ local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Co
 local settings = Config.RoomStitch
 
 type Box = {min: Vector3, max: Vector3}
+type CapState = {Transparency: number, CanCollide: boolean, CanQuery: boolean, CanTouch: boolean}
 
 local RoomStitcher = {}
 
 -- Rooms placed in the current build. Reset forgets them; it never destroys.
 local placedRooms = {} :: {Model}
+
+-- Models that already stood in the world (the Submarine) and outlive every map.
+-- Their mated caps are hidden instead of destroyed so RestoreExisting can bring
+-- them back. Only RestoreExisting clears these, so a Reset alone never loses a cap.
+local existingRooms = {} :: {Model}
+local hiddenCaps = {} :: {[BasePart]: CapState}
 
 local function boundsOf(room: Model): BasePart?
 	local bounds = room.PrimaryPart
@@ -68,6 +75,23 @@ local function boxesOverlap(a: Box, b: Box): boolean
 	return depth.X > tolerance and depth.Y > tolerance and depth.Z > tolerance
 end
 
+-- The original state is recorded only once, so finalizing twice cannot
+-- overwrite it with the hidden state.
+local function hideCap(cap: BasePart)
+	if not hiddenCaps[cap] then
+		hiddenCaps[cap] = {
+			Transparency = cap.Transparency,
+			CanCollide = cap.CanCollide,
+			CanQuery = cap.CanQuery,
+			CanTouch = cap.CanTouch,
+		}
+	end
+	cap.Transparency = 1
+	cap.CanCollide = false
+	cap.CanQuery = false
+	cap.CanTouch = false
+end
+
 function RoomStitcher.GetConnectors(room: Model): {[string]: Attachment}
 	local connectors: {[string]: Attachment} = {}
 	for _, descendant in ipairs(room:GetDescendants()) do
@@ -90,6 +114,21 @@ function RoomStitcher.GetConnectors(room: Model): {[string]: Attachment}
 		end
 	end
 	return connectors
+end
+
+-- Registers a room that already stands in the world, without cloning it, so new
+-- rooms can attach to its Connectors and its Bounds count for overlap checks.
+function RoomStitcher.RegisterExisting(model: Model): boolean
+	if not boundsOf(model) then
+		return false
+	end
+	if not table.find(placedRooms, model) then
+		table.insert(placedRooms, model)
+	end
+	if not table.find(existingRooms, model) then
+		table.insert(existingRooms, model)
+	end
+	return true
 end
 
 function RoomStitcher.PlaceFirst(template: Model, pivot: CFrame, parent: Instance): Model
@@ -148,11 +187,8 @@ function RoomStitcher.Attach(
 	local box = worldBox(bounds)
 	for _, placed in ipairs(placedRooms) do
 		local placedBounds = boundsOf(placed)
+		-- Overlap is an expected outcome while generating, so callers count it instead of a warning.
 		if placedBounds and boxesOverlap(box, worldBox(placedBounds)) then
-			warn(string.format(
-				"[RoomStitcher] Rejected: %s on %s Connector %q would overlap the already-placed %s.",
-				template.Name, placedRoom:GetFullName(), placedConnectorId, placed:GetFullName()
-			))
 			clone:Destroy()
 			return nil
 		end
@@ -168,14 +204,18 @@ end
 -- Caps are settled here in one pass rather than inside Attach, because later
 -- generation steps try placements and reject some: a cap opened for a placement
 -- that then gets rolled back would leave a hole to the void. Safe to call twice.
-function RoomStitcher.FinalizeDoorways()
+-- Returns how many doorways were opened, capped, and missing a cap.
+function RoomStitcher.FinalizeDoorways(): (number, number, number)
 	local opened, capped, missing = 0, 0, 0
 	for _, room in ipairs(placedRooms) do
 		for id, connector in pairs(RoomStitcher.GetConnectors(room)) do
 			local cap = room:FindFirstChild("Cap_" .. id)
 			if connector:GetAttribute("Mated") == true then
 				-- Both rooms at a joint drop their cap, so the doorway opens from either side.
-				if cap then
+				if cap and cap:IsA("BasePart") and table.find(existingRooms, room) then
+					hideCap(cap)
+					opened += 1
+				elseif cap then
 					cap:Destroy()
 					opened += 1
 				end
@@ -202,6 +242,24 @@ function RoomStitcher.FinalizeDoorways()
 		"[RoomStitcher] Doorways finalized: %d room(s), %d opened, %d capped, %d missing.",
 		#placedRooms, opened, capped, missing
 	))
+	return opened, capped, missing
+end
+
+-- Puts every registered-existing model back as it was before any map touched it.
+function RoomStitcher.RestoreExisting()
+	for _, room in ipairs(existingRooms) do
+		for _, connector in pairs(RoomStitcher.GetConnectors(room)) do
+			connector:SetAttribute("Mated", nil)
+		end
+	end
+	for cap, state in pairs(hiddenCaps) do
+		cap.Transparency = state.Transparency
+		cap.CanCollide = state.CanCollide
+		cap.CanQuery = state.CanQuery
+		cap.CanTouch = state.CanTouch
+	end
+	table.clear(hiddenCaps)
+	table.clear(existingRooms)
 end
 
 function RoomStitcher.Reset()
